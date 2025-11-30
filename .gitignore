@@ -81,6 +81,9 @@ dmypy.json
 # LSP config files
 pyrightconfig.json
 
+# Kiro IDE
+.kiro/
+
 # Project specific
 *.log
 output/
