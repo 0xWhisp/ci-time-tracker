@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A CLI tool for analyzing CI/CD pipeline configurations and build logs"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     {name = "ci-time-tracker contributors"}
 ]
@@ -20,10 +20,10 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Build Tools",
 ]
 dependencies = [
@@ -41,8 +41,8 @@ dev = [
 ci-time-tracker = "ci_time_tracker.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/example/ci-time-tracker"
-Repository = "https://github.com/example/ci-time-tracker"
+Homepage = "https://github.com/0xWhisp/ci-time-tracker"
+Repository = "https://github.com/0xWhisp/ci-time-tracker"
 
 [tool.setuptools.packages.find]
 where = ["."]

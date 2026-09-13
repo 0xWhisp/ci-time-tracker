@@ -320,3 +320,130 @@ class TestParseLogAutoDetect:
         result = parse_log(log, format="text")
         # Text parser won't find steps in this
         assert len(result.steps) == 0
+
+
+class TestRealWorldLogFormats:
+    """Regression tests using logs shaped like real CI runner output."""
+
+    GITHUB_JOB_LOG = """\
+2026-09-01T10:00:00.0000000Z Current runner version: '2.319.1'
+2026-09-01T10:00:00.1000000Z ##[group]Operating System
+2026-09-01T10:00:00.1000000Z Ubuntu
+2026-09-01T10:00:00.1000000Z ##[endgroup]
+2026-09-01T10:00:02.0000000Z ##[group]Run actions/checkout@v4
+2026-09-01T10:00:02.0000000Z with:
+2026-09-01T10:00:02.0000000Z   repository: acme/web
+2026-09-01T10:00:02.0000000Z ##[endgroup]
+2026-09-01T10:00:02.5000000Z Syncing repository: acme/web
+2026-09-01T10:00:02.6000000Z ##[group]Getting Git version info
+2026-09-01T10:00:03.0000000Z git version 2.46.0
+2026-09-01T10:00:03.0000000Z ##[endgroup]
+2026-09-01T10:00:06.5000000Z ##[group]Run npm ci
+2026-09-01T10:00:06.5000000Z npm ci
+2026-09-01T10:00:06.5000000Z shell: /usr/bin/bash -e {0}
+2026-09-01T10:00:06.5000000Z ##[endgroup]
+2026-09-01T10:01:36.7500000Z added 1204 packages in 90s
+2026-09-01T10:01:37.0000000Z ##[group]Run npm test
+2026-09-01T10:01:37.0000000Z npm test
+2026-09-01T10:01:37.0000000Z ##[endgroup]
+2026-09-01T10:04:10.0000000Z FAIL src/app.test.js
+2026-09-01T10:04:12.2500000Z ##[error]Process completed with exit code 1.
+2026-09-01T10:04:12.5000000Z Post job cleanup.
+2026-09-01T10:04:13.0000000Z [command]/usr/bin/git version
+2026-09-01T10:04:20.0000000Z Cleaning up orphan processes
+"""
+
+    GITLAB_JOB_LOG = (
+        "\x1b[0KRunning with gitlab-runner 17.3.0 (a1b2c3d4)\x1b[0;m\n"
+        "section_start:1756720800:prepare_executor\r\x1b[0K\x1b[36;1mPreparing the \"docker\" executor\x1b[0;m\n"
+        "Using docker image node:22 ...\n"
+        "section_end:1756720812:prepare_executor\r\x1b[0K\n"
+        "section_start:1756720812:get_sources\r\x1b[0K\x1b[36;1mGetting source from Git repository\x1b[0;m\n"
+        "section_end:1756720818:get_sources\r\x1b[0K\n"
+        "section_start:1756720818:restore-cache[collapsed=true]\r\x1b[0K\x1b[36;1mRestoring cache\x1b[0;m\n"
+        "section_end:1756720823:restore-cache\r\x1b[0K\n"
+        "section_start:1756720823:step_script\r\x1b[0K\x1b[36;1mExecuting \"step_script\" stage of the job script\x1b[0;m\n"
+        "$ npm test\n"
+        "Tests: 1 failed, 41 passed, 42 total\n"
+        "section_end:1756721003:step_script\r\x1b[0K\n"
+        "section_start:1756721003:cleanup_file_variables\r\x1b[0K\x1b[36;1mCleaning up project directory\x1b[0;m\n"
+        "section_end:1756721004:cleanup_file_variables\r\x1b[0K\n"
+        "\x1b[31;1mERROR: Job failed: exit code 1\x1b[0;m\n"
+    )
+
+    def test_github_step_duration_spans_until_next_step(self):
+        """Step duration runs to the next step, not to the header's ##[endgroup]."""
+        result = parse_text_log(self.GITHUB_JOB_LOG)
+        durations = {s.name: s.duration_seconds for s in result.steps}
+        assert durations == {
+            "actions/checkout@v4": 4.5,
+            "npm ci": 90.5,
+            "npm test": 155.5,  # ends at "Post job cleanup.", not at the last log line
+        }
+
+    def test_github_nested_groups_are_not_steps(self):
+        """Groups without "Run" belong to the surrounding step."""
+        result = parse_text_log(self.GITHUB_JOB_LOG)
+        names = [s.name for s in result.steps]
+        assert "Operating System" not in names
+        assert "Getting Git version info" not in names
+
+    def test_github_failure_attributed_to_failing_step_only(self):
+        """An ##[error] marks only the step it appears in."""
+        result = parse_text_log(self.GITHUB_JOB_LOG)
+        statuses = {s.name: s.status for s in result.steps}
+        assert statuses == {
+            "actions/checkout@v4": "success",
+            "npm ci": "success",
+            "npm test": "failure",
+        }
+
+    def test_gitlab_sections_with_ansi_codes_and_special_names(self):
+        """Section names with '-' and options parse, and durations are correct."""
+        result = parse_text_log(self.GITLAB_JOB_LOG)
+        durations = {s.name: s.duration_seconds for s in result.steps}
+        assert durations == {
+            "prepare_executor": 12.0,
+            "get_sources": 6.0,
+            "restore-cache": 5.0,
+            "step_script": 180.0,
+            "cleanup_file_variables": 1.0,
+        }
+
+    def test_gitlab_job_failure_attributed_to_step_script(self):
+        """'ERROR: Job failed' after all sections marks step_script as failed."""
+        result = parse_text_log(self.GITLAB_JOB_LOG)
+        failed = [s.name for s in result.steps if s.status == "failure"]
+        assert failed == ["step_script"]
+
+    def test_gitlab_successful_job_has_no_failures(self):
+        """Output mentioning 'failed' or 'error' does not mark a step as failed."""
+        log = (
+            "section_start:1756720800:step_script\r\x1b[0K\n"
+            "Tests: 0 failed, 42 passed; no errors\n"
+            "section_end:1756720860:step_script\r\x1b[0K\n"
+            "\x1b[32;1mJob succeeded\x1b[0;m\n"
+        )
+        result = parse_text_log(log)
+        assert [s.status for s in result.steps] == ["success"]
+
+    def test_json_duration_in_milliseconds_is_converted(self):
+        """duration_ms and durationMs are reported in seconds."""
+        log = '[{"name": "build", "duration_ms": 120000}, {"name": "test", "durationMs": 1500}]'
+        result = parse_json_log(log)
+        assert result.steps[0].duration_seconds == 120.0
+        assert result.steps[1].duration_seconds == 1.5
+
+    def test_json_zero_values_are_kept(self):
+        """A zero duration or id is a real value, not a missing one."""
+        log = '{"build_id": 0, "steps": [{"name": "noop", "duration": 0, "duration_ms": 9000}]}'
+        result = parse_json_log(log)
+        assert result.build_id == "0"
+        assert result.steps[0].duration_seconds == 0.0
+
+    def test_json_non_numeric_attempt_does_not_crash(self):
+        """String attempt counters are handled instead of raising TypeError."""
+        log = '[{"name": "a", "attempt": "2"}, {"name": "b", "attempt": "first"}]'
+        result = parse_json_log(log)
+        assert result.steps[0].is_retry is True
+        assert result.steps[1].is_retry is False

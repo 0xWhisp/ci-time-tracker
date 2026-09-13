@@ -12,14 +12,10 @@ A minimal CLI tool for analyzing CI/CD pipeline configurations and build logs to
 
 ## Installation
 
-```bash
-pip install ci-time-tracker
-```
-
-Or run directly from source:
+Requires Python 3.10+. Not yet published on PyPI; install from source:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/0xWhisp/ci-time-tracker.git
 cd ci-time-tracker
 pip install -e .
 ```

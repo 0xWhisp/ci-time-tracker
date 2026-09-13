@@ -6,8 +6,8 @@ This module provides functionality to parse CI/CD build logs in various formats
 
 import json
 import re
-from datetime import datetime
-from typing import Literal
+from datetime import datetime, timedelta
+from typing import Any, Literal
 
 from ci_time_tracker.models import BuildLog, StepExecution
 
@@ -161,64 +161,90 @@ def _parse_timestamp(text: str) -> datetime | None:
     return None
 
 
+_GHA_TIMESTAMP = r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)'
+
+# "##[group]<title>", optionally prefixed by the line timestamp
+_GHA_GROUP_PATTERN = re.compile(
+    rf'^(?:{_GHA_TIMESTAMP}\s+)?##\[group\](.*?)[ \t\r]*$',
+    re.MULTILINE
+)
+
+# Lines the runner emits once the job's own steps have finished
+_GHA_JOB_TEARDOWN_PATTERN = re.compile(
+    rf'^(?:{_GHA_TIMESTAMP}\s+)?(?:Post job cleanup\.|Cleaning up orphan processes)',
+    re.MULTILINE
+)
+
+_GHA_LINE_TIMESTAMP_PATTERN = re.compile(rf'^{_GHA_TIMESTAMP}\s', re.MULTILINE)
+
+
+def _parse_gha_timestamp(value: str | None) -> datetime | None:
+    """Parse a GitHub Actions timestamp, keeping sub-second precision."""
+    if not value:
+        return None
+    match = re.match(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?', value)
+    if not match:
+        return None
+    timestamp = datetime.strptime(match.group(1), '%Y-%m-%dT%H:%M:%S')
+    if match.group(2):
+        # Runner logs use 7 fractional digits; datetime supports 6
+        timestamp += timedelta(microseconds=int(match.group(2)[:6].ljust(6, '0')))
+    return timestamp
+
+
 def _parse_github_actions_log(content: str) -> list[StepExecution]:
     """Parse GitHub Actions log format.
-    
-    GitHub Actions logs have patterns like:
-    ##[group]Run step-name
-    ##[endgroup]
-    Or timing annotations like:
-    2024-01-15T10:30:45.1234567Z ##[group]Step Name
+
+    Job logs prefix every line with a timestamp and open each step with a
+    ``##[group]Run <name>`` header:
+
+    2024-01-15T10:30:45.1234567Z ##[group]Run npm test
+    2024-01-15T10:30:45.1234567Z npm test
+    2024-01-15T10:30:45.1234567Z ##[endgroup]
+    2024-01-15T10:32:10.0000000Z ...step output...
+
+    ``##[endgroup]`` only closes the header block (the step's inputs), so a
+    step runs until the next step header or the job teardown, and the last
+    step until its final timestamped line. Groups without ``Run`` are nested
+    sections of the current step; if a log has no ``Run`` headers at all,
+    every group is treated as a step.
     """
     steps: list[StepExecution] = []
-    
-    # Pattern for GitHub Actions step markers
-    # Matches: timestamp ##[group]Step Name or ##[group]Run command
-    step_pattern = re.compile(
-        r'(?:(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s+)?##\[group\](?:Run\s+)?(.+?)(?:\s*$)',
-        re.MULTILINE
+
+    groups = list(_GHA_GROUP_PATTERN.finditer(content))
+    headers = [m for m in groups if m.group(2).startswith('Run ')] or groups
+    boundaries = sorted(
+        headers + list(_GHA_JOB_TEARDOWN_PATTERN.finditer(content)),
+        key=lambda m: m.start()
     )
-    
-    # Pattern for step completion
-    end_pattern = re.compile(
-        r'(?:(\d{4}-\d{2}-\d{2}T[\d:.]+Z?)\s+)?##\[endgroup\]',
-        re.MULTILINE
-    )
-    
-    # Pattern for step status (success/failure)
-    status_pattern = re.compile(
-        r'(?:##\[error\]|Process completed with exit code (\d+))',
-        re.MULTILINE
-    )
-    
-    step_starts = list(step_pattern.finditer(content))
-    step_ends = list(end_pattern.finditer(content))
-    
-    for i, start_match in enumerate(step_starts):
-        step_name = start_match.group(2).strip()
-        start_time = _parse_timestamp(start_match.group(1) or '')
-        
-        # Find corresponding end
-        end_time = None
-        if i < len(step_ends):
-            end_time = _parse_timestamp(step_ends[i].group(1) or '')
-        
-        # Calculate duration
+
+    for header in headers:
+        step_name = header.group(2)
+        if step_name.startswith('Run '):
+            step_name = step_name[len('Run '):]
+        step_name = step_name.strip()
+
+        # The step ends where the next step (or the job teardown) begins
+        boundary = next((b for b in boundaries if b.start() > header.start()), None)
+        step_content = content[header.end():boundary.start() if boundary else len(content)]
+
+        start_time = _parse_gha_timestamp(header.group(1))
+        end_time = _parse_gha_timestamp(boundary.group(1)) if boundary else None
+        if end_time is None:
+            line_timestamps = _GHA_LINE_TIMESTAMP_PATTERN.findall(step_content)
+            if line_timestamps:
+                end_time = _parse_gha_timestamp(line_timestamps[-1])
+
         duration = None
         if start_time and end_time:
             duration = (end_time - start_time).total_seconds()
-        
-        # Check for failure status in the step's content
+
         status: Literal["success", "failure", "skipped"] = "success"
-        step_content_start = start_match.end()
-        step_content_end = step_ends[i].start() if i < len(step_ends) else len(content)
-        step_content = content[step_content_start:step_content_end]
-        
+        exit_code_match = re.search(r'Process completed with exit code (\d+)', step_content)
         if '##[error]' in step_content:
             status = "failure"
-        elif status_match := status_pattern.search(step_content):
-            if status_match.group(1) and status_match.group(1) != '0':
-                status = "failure"
+        elif exit_code_match and exit_code_match.group(1) != '0':
+            status = "failure"
         
         # Check for retry indicator
         is_retry = bool(re.search(r'retry|attempt\s*[2-9]', step_name, re.IGNORECASE))
@@ -244,44 +270,53 @@ def _parse_gitlab_log(content: str) -> list[StepExecution]:
     Or ANSI-colored output with timestamps.
     """
     steps: list[StepExecution] = []
-    
-    # Pattern for GitLab section markers
+
+    # Pattern for GitLab section markers. Names allow letters, digits, '_',
+    # '.' and '-'; options like "[collapsed=true]" and ANSI codes follow them.
     section_start_pattern = re.compile(
-        r'section_start:(\d+):(\w+)',
+        r'section_start:(\d+):([\w.-]+)',
         re.MULTILINE
     )
     section_end_pattern = re.compile(
-        r'section_end:(\d+):(\w+)',
+        r'section_end:(\d+):([\w.-]+)',
         re.MULTILINE
     )
-    
+
+    # Failure evidence inside a section, and the runner's job-level verdict
+    step_failure_pattern = re.compile(r'exit code [1-9]|ERROR: Job failed')
+    job_failed_pattern = re.compile(r'ERROR: Job failed')
+
     # Also try to match "Running with gitlab-runner" style logs
     job_pattern = re.compile(
         r'(?:Executing|Running)\s+"([^"]+)"',
         re.MULTILINE
     )
-    
-    starts = {m.group(2): int(m.group(1)) for m in section_start_pattern.finditer(content)}
-    ends = {m.group(2): int(m.group(1)) for m in section_end_pattern.finditer(content)}
-    
+
+    starts = {m.group(2): m for m in section_start_pattern.finditer(content)}
+    ends = {m.group(2): m for m in section_end_pattern.finditer(content)}
+
     if starts:
-        for name, start_ts in starts.items():
+        for name, start_match in starts.items():
+            start_ts = int(start_match.group(1))
             start_time = datetime.fromtimestamp(start_ts)
             end_time = None
             duration = None
-            
-            if name in ends:
-                end_ts = ends[name]
+            section_end = len(content)
+
+            end_match = ends.get(name)
+            if end_match and end_match.start() > start_match.start():
+                end_ts = int(end_match.group(1))
                 end_time = datetime.fromtimestamp(end_ts)
                 duration = float(end_ts - start_ts)
-            
-            # Check for failure
+                section_end = end_match.start()
+
+            # Check for failure within the section's own output
             status: Literal["success", "failure", "skipped"] = "success"
-            if re.search(rf'{name}.*(?:failed|error|exit code [1-9])', content, re.IGNORECASE):
+            if step_failure_pattern.search(content[start_match.end():section_end]):
                 status = "failure"
-            
+
             is_retry = bool(re.search(r'retry|attempt\s*[2-9]', name, re.IGNORECASE))
-            
+
             steps.append(StepExecution(
                 name=name,
                 start_time=start_time,
@@ -290,6 +325,12 @@ def _parse_gitlab_log(content: str) -> list[StepExecution]:
                 status=status,
                 is_retry=is_retry
             ))
+
+        # The runner reports a failed job after all sections have closed;
+        # attribute it to the job script when no section showed the failure.
+        if job_failed_pattern.search(content) and not any(s.status == "failure" for s in steps):
+            culprit = next((s for s in steps if s.name == "step_script"), steps[-1])
+            culprit.status = "failure"
     else:
         # Try job pattern
         for match in job_pattern.finditer(content):
@@ -479,40 +520,48 @@ def _parse_json_steps_array(data: list) -> list[StepExecution]:
     return steps
 
 
+def _first_present(data: dict, *keys: str) -> Any:
+    """Return the value of the first key holding a non-null, non-empty value.
+    
+    Unlike chaining ``data.get(a) or data.get(b)``, this keeps falsy but
+    meaningful values such as ``0``.
+    """
+    for key in keys:
+        value = data.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _as_number(value: Any) -> float | None:
+    """Convert a JSON value to a float, or None if it is not numeric."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
 def _parse_json_step(data: dict) -> StepExecution | None:
     """Parse a single step object from JSON."""
     # Try various field names for step name
-    name = (
-        data.get("name") or 
-        data.get("step_name") or 
-        data.get("stepName") or
-        data.get("step") or
-        data.get("job") or
-        data.get("job_name") or
-        data.get("jobName")
+    name = _first_present(
+        data, "name", "step_name", "stepName", "step", "job", "job_name", "jobName"
     )
     
-    if not name:
+    if name is None:
         return None
     
     # Parse timestamps
-    start_time = _parse_json_timestamp(
-        data.get("start_time") or 
-        data.get("startTime") or 
-        data.get("started_at") or
-        data.get("startedAt") or
-        data.get("start")
-    )
+    start_time = _parse_json_timestamp(_first_present(
+        data, "start_time", "startTime", "started_at", "startedAt", "start"
+    ))
     
-    end_time = _parse_json_timestamp(
-        data.get("end_time") or 
-        data.get("endTime") or 
-        data.get("finished_at") or
-        data.get("finishedAt") or
-        data.get("end") or
-        data.get("completed_at") or
-        data.get("completedAt")
-    )
+    end_time = _parse_json_timestamp(_first_present(
+        data, "end_time", "endTime", "finished_at", "finishedAt", "end",
+        "completed_at", "completedAt"
+    ))
     
     # Parse duration
     duration = _parse_json_duration(data)
@@ -525,12 +574,12 @@ def _parse_json_step(data: dict) -> StepExecution | None:
     status = _parse_json_status(data)
     
     # Check for retry
+    attempt = _as_number(data.get("attempt"))
+    retry_count = _as_number(data.get("retry_count"))
     is_retry = (
-        data.get("is_retry", False) or
-        data.get("isRetry", False) or
-        data.get("retry", False) or
-        (data.get("attempt", 1) > 1) or
-        (data.get("retry_count", 0) > 0)
+        any(bool(data.get(key)) for key in ("is_retry", "isRetry", "retry")) or
+        (attempt is not None and attempt > 1) or
+        (retry_count is not None and retry_count > 0)
     )
     
     return StepExecution(
@@ -539,7 +588,7 @@ def _parse_json_step(data: dict) -> StepExecution | None:
         end_time=end_time,
         duration_seconds=duration,
         status=status,
-        is_retry=bool(is_retry)
+        is_retry=is_retry
     )
 
 
@@ -580,41 +629,33 @@ def _parse_json_timestamp(value: str | int | float | None) -> datetime | None:
     return None
 
 
+# Duration field names, in lookup order, with the divisor that converts them to seconds
+_DURATION_FIELDS = (
+    ("duration", 1.0),
+    ("duration_seconds", 1.0),
+    ("durationSeconds", 1.0),
+    ("duration_ms", 1000.0),
+    ("durationMs", 1000.0),
+    ("elapsed", 1.0),
+    ("elapsed_time", 1.0),
+    ("elapsedTime", 1.0),
+)
+
+
 def _parse_json_duration(data: dict) -> float | None:
-    """Extract duration from JSON step data."""
-    # Try various field names
-    duration = (
-        data.get("duration") or
-        data.get("duration_seconds") or
-        data.get("durationSeconds") or
-        data.get("duration_ms") or
-        data.get("durationMs") or
-        data.get("elapsed") or
-        data.get("elapsed_time") or
-        data.get("elapsedTime")
-    )
+    """Extract duration in seconds from JSON step data."""
+    for key, divisor in _DURATION_FIELDS:
+        if _first_present(data, key) is None:
+            continue
+        duration = _as_number(data[key])
+        return duration / divisor if duration is not None else None
     
-    if duration is None:
-        return None
-    
-    try:
-        duration_float = float(duration)
-        # Check if it's in milliseconds (heuristic: > 1000 and field name suggests ms)
-        if "ms" in str(data.get("duration_ms", "")) or "Ms" in str(data.get("durationMs", "")):
-            return duration_float / 1000.0
-        return duration_float
-    except (ValueError, TypeError):
-        return None
+    return None
 
 
 def _parse_json_status(data: dict) -> Literal["success", "failure", "skipped"]:
     """Extract status from JSON step data."""
-    status_value = (
-        data.get("status") or
-        data.get("conclusion") or
-        data.get("result") or
-        data.get("state")
-    )
+    status_value = _first_present(data, "status", "conclusion", "result", "state")
     
     if status_value is None:
         return "success"
@@ -633,46 +674,24 @@ def _parse_json_status(data: dict) -> Literal["success", "failure", "skipped"]:
 
 def _extract_build_id(data: dict) -> str | None:
     """Extract build ID from JSON data."""
-    build_id = (
-        data.get("build_id") or
-        data.get("buildId") or
-        data.get("id") or
-        data.get("run_id") or
-        data.get("runId") or
-        data.get("job_id") or
-        data.get("jobId")
+    build_id = _first_present(
+        data, "build_id", "buildId", "id", "run_id", "runId", "job_id", "jobId"
     )
     return str(build_id) if build_id is not None else None
 
 
 def _extract_timestamp(data: dict) -> datetime | None:
     """Extract build timestamp from JSON data."""
-    timestamp = (
-        data.get("timestamp") or
-        data.get("created_at") or
-        data.get("createdAt") or
-        data.get("started_at") or
-        data.get("startedAt")
+    timestamp = _first_present(
+        data, "timestamp", "created_at", "createdAt", "started_at", "startedAt"
     )
     return _parse_json_timestamp(timestamp)
 
 
 def _extract_total_duration(data: dict) -> float | None:
     """Extract total duration from JSON data."""
-    duration = (
-        data.get("total_duration") or
-        data.get("totalDuration") or
-        data.get("duration") or
-        data.get("elapsed")
-    )
-    
-    if duration is not None:
-        try:
-            return float(duration)
-        except (ValueError, TypeError):
-            pass
-    
-    return None
+    duration = _first_present(data, "total_duration", "totalDuration", "duration", "elapsed")
+    return _as_number(duration) if duration is not None else None
 
 
 def _extract_steps_from_dict(data: dict) -> list[StepExecution]:
