@@ -7,15 +7,15 @@ Esfuerzo: **S** ≤ 1 día · **M** 2–3 días · **L** 4–6 días
 | # | Tarea | Esfuerzo | Impacto | ROI | Depende de | Estado |
 |---|-------|----------|---------|-----|------------|--------|
 | 1 | Arreglar bugs críticos de parsing y empaquetado | S | Alto | ★★★★★ | — | ✅ Hecha (`6dd8d99`) |
-| 2 | Ingesta directa desde la API de GitHub Actions + caché local | L | Muy alto | ★★★★★ | 1 |
-| 3 | Métricas accionables: tiempo total, costo estimado, tiempo en cola | S | Alto | ★★★★☆ | 2 |
-| 4 | Flaky real (mismo commit / reintentos) y detección de regresiones | M | Alto | ★★★★☆ | 2 |
-| 5 | Salida Markdown (`$GITHUB_STEP_SUMMARY`) y umbrales `--fail-on` | S | Medio | ★★★★☆ | 3, 4 |
-| 6 | CI propio, publicación en PyPI y README con demo | S | Medio | ★★★★☆ | 1–5 |
-| 7 | GitHub Action que comenta en PRs el impacto en tiempos | M | Alto | ★★★☆☆ | 5, 6 |
-| 8 | Recomendaciones cruzando config y datos reales | L | Alto (diferenciador) | ★★★☆☆ | 2, 3 |
-| 9 | Proveedores GitLab y CircleCI por API + registro extensible | M c/u | Medio | ★★☆☆☆ | 2 |
-| 10 | Reporte HTML con gráficos de tendencia | M | Medio | ★★☆☆☆ | 3, 4 |
+| 2 | Ingesta directa desde la API de GitHub Actions + caché local | L | Muy alto | ★★★★★ | 1 | ✅ Hecha |
+| 3 | Métricas accionables: tiempo total, costo estimado, tiempo en cola | S | Alto | ★★★★☆ | 2 | ⬜ Pendiente |
+| 4 | Flaky real (mismo commit / reintentos) y detección de regresiones | M | Alto | ★★★★☆ | 2 | ⬜ Pendiente |
+| 5 | Salida Markdown (`$GITHUB_STEP_SUMMARY`) y umbrales `--fail-on` | S | Medio | ★★★★☆ | 3, 4 | ⬜ Pendiente |
+| 6 | CI propio, publicación en PyPI y README con demo | S | Medio | ★★★★☆ | 1–5 | ⬜ Pendiente |
+| 7 | GitHub Action que comenta en PRs el impacto en tiempos | M | Alto | ★★★☆☆ | 5, 6 | ⬜ Pendiente |
+| 8 | Recomendaciones cruzando config y datos reales | L | Alto (diferenciador) | ★★★☆☆ | 2, 3 | ⬜ Pendiente |
+| 9 | Proveedores GitLab y CircleCI por API + registro extensible | M c/u | Medio | ★★☆☆☆ | 2 | ⬜ Pendiente |
+| 10 | Reporte HTML con gráficos de tendencia | M | Medio | ★★☆☆☆ | 3, 4 | ⬜ Pendiente |
 
 **Punto de validación:** después de la tarea 6, publicar y recoger feedback de usuarios reales
 antes de invertir en 8–10.
@@ -37,15 +37,21 @@ La función principal hoy da resultados incorrectos con logs reales.
 
 ## 2. Ingesta desde la API de GitHub Actions
 
-`ci-time-tracker github owner/repo --workflow ci.yml --last 200`
+`ci-time-tracker --github owner/repo --workflow ci.yml --last 200`
 
-- Cliente para `/actions/runs` y `/actions/runs/{id}/jobs` (token por `GITHUB_TOKEN` o `gh auth token`).
-- Mapear jobs y steps a `BuildLog` / `StepExecution` conservando `head_sha`, `run_attempt`,
-  `created_at` (cola) y `runner` en los modelos.
-- Caché SQLite incremental (no volver a descargar runs ya vistos); paginación y rate limit.
-- Tests con respuestas grabadas (sin red).
+- [x] Cliente para `/actions/runs` y `/actions/runs/{id}/jobs` (token por `GITHUB_TOKEN` o `GH_TOKEN`),
+      solo con la librería estándar, sin dependencias nuevas.
+- [x] Mapear jobs y steps a `BuildLog` / `StepExecution` conservando `head_sha`, `run_attempt`,
+      tiempo en cola y `runner`. Los pasos se nombran `job / step`, como en la interfaz de GitHub.
+- [x] Caché SQLite incremental (solo se cachean runs completados) y peticiones de jobs concurrentes.
+- [x] Paginación de runs y de jobs; errores de rate limit, permisos y 404 con mensajes accionables.
+- [x] Tests con respuestas grabadas (sin red).
 
 **Aceptación:** analizar 200 runs de un repo público en < 1 min la primera vez y < 5 s con caché.
+
+**Medido** (psf/requests, 10 runs, sin token): 6,6 s en serie → **2,2 s** concurrente en frío y
+**0,6 s** con caché. Extrapolado, 200 runs ≈ 15 s. Falta confirmarlo con 200 runs reales, que
+necesita un token (sin él GitHub permite 60 peticiones por hora).
 
 ## 3. Métricas accionables
 

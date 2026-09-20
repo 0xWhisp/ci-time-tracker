@@ -50,6 +50,38 @@ ci-time-tracker --config .github/workflows/ci.yml --output report.txt
 }
 ```
 
+### GitHub Actions API Mode
+
+Analyze recent workflow runs straight from the GitHub Actions API, with no log
+files to collect. Timings come from the API, so nothing depends on parsing
+runner log text:
+
+```bash
+# Last 50 runs of every workflow in the repository
+ci-time-tracker --github acme/web
+
+# Last 200 runs of a single workflow on main
+ci-time-tracker --github acme/web --workflow ci.yml --branch main --last 200
+
+# JSON for a dashboard
+ci-time-tracker --github acme/web --format json
+```
+
+Set `GITHUB_TOKEN` (or `GH_TOKEN`) to reach private repositories and to raise the
+rate limit from 60 to 5000 requests per hour:
+
+```bash
+export GITHUB_TOKEN=$(gh auth token)
+```
+
+Each run costs one API request for its jobs, so completed runs are cached
+locally and later invocations only fetch what is new. The cache lives in the
+platform cache directory (override with `--cache-path` or the
+`CI_TIME_TRACKER_CACHE` environment variable), and `--no-cache` skips it.
+
+Steps are reported as `job / step`, the way the GitHub UI names them, so
+identically named steps in different jobs stay separate.
+
 ### Log Analysis Mode
 
 Analyze build logs to compute actual durations and detect issues:

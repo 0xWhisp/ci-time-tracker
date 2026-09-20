@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Any
 
 from ci_time_tracker.analyzer import analyze_config, analyze_logs
+from ci_time_tracker.cache import RunCache
 from ci_time_tracker.config_parser import parse_config
+from ci_time_tracker.github_api import (
+    DEFAULT_RUN_LIMIT,
+    GitHubAPIError,
+    fetch_build_logs,
+)
 from ci_time_tracker.log_parser import parse_log
 from ci_time_tracker.reporter import format_json, format_text, generate_report
 
@@ -44,6 +50,49 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         type=str,
         metavar="PATH",
         help="Path to build log file or directory containing multiple logs. Use '-' for stdin.",
+    )
+    mode_group.add_argument(
+        "--github",
+        type=str,
+        metavar="OWNER/REPO",
+        help="Analyze recent workflow runs fetched from the GitHub Actions API. "
+             "Set GITHUB_TOKEN to reach private repositories and raise the rate limit.",
+    )
+
+    # GitHub mode options
+    parser.add_argument(
+        "--workflow",
+        type=str,
+        metavar="FILE",
+        help="Workflow file name to analyze (e.g. ci.yml). Only used with --github.",
+    )
+
+    parser.add_argument(
+        "--branch",
+        type=str,
+        metavar="NAME",
+        help="Only analyze runs of this branch. Only used with --github.",
+    )
+
+    parser.add_argument(
+        "--last",
+        type=int,
+        default=DEFAULT_RUN_LIMIT,
+        metavar="N",
+        help=f"Number of recent runs to analyze (default: {DEFAULT_RUN_LIMIT}). Only used with --github.",
+    )
+
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Ignore the local run cache and refetch every run. Only used with --github.",
+    )
+
+    parser.add_argument(
+        "--cache-path",
+        type=str,
+        metavar="PATH",
+        help="Location of the local run cache database. Only used with --github.",
     )
     
     # Optional arguments
@@ -260,10 +309,41 @@ def main() -> int:
             
             # Analyze
             result = analyze_logs(parsed_logs)
-        
+
+        elif args.github:
+            # GitHub Actions API mode
+            cache = None
+            if not args.no_cache:
+                try:
+                    cache = RunCache(args.cache_path)
+                except Exception as e:
+                    print(f"Warning: run cache unavailable ({e})", file=sys.stderr)
+
+            try:
+                logs = fetch_build_logs(
+                    repo=args.github,
+                    workflow=args.workflow,
+                    branch=args.branch,
+                    limit=args.last,
+                    cache=cache,
+                )
+            except GitHubAPIError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return 3
+            finally:
+                if cache is not None:
+                    cache.close()
+
+            if not logs:
+                print("Error: No workflow runs found to analyze", file=sys.stderr)
+                return 1
+
+            # Analyze
+            result = analyze_logs(logs)
+
         else:
             # Should never reach here due to argparse
-            print("Error: Must specify --config or --logs", file=sys.stderr)
+            print("Error: Must specify --config, --logs or --github", file=sys.stderr)
             return 1
         
         # Generate report

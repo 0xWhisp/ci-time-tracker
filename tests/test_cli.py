@@ -85,6 +85,136 @@ class TestArgumentParsing:
             parse_args(["--config", "config.yml", "--logs", "build.log"])
 
 
+class TestGitHubMode:
+    """Unit tests for the GitHub Actions API mode."""
+
+    def _fake_logs(self) -> list[Any]:
+        from ci_time_tracker.models import BuildLog, StepExecution
+
+        return [
+            BuildLog(
+                build_id="1",
+                head_sha="abc123",
+                steps=[
+                    StepExecution(
+                        name="test / Run npm test",
+                        duration_seconds=12.0,
+                        status="success",
+                        job_name="test",
+                    )
+                ],
+            )
+        ]
+
+    def test_parse_args_github_mode_defaults(self) -> None:
+        """GitHub mode has sensible defaults for its options."""
+        args = parse_args(["--github", "acme/web"])
+
+        assert args.github == "acme/web"
+        assert args.workflow is None
+        assert args.branch is None
+        assert args.last == 50
+        assert args.no_cache is False
+
+    def test_parse_args_github_options(self) -> None:
+        """All GitHub mode options are parsed."""
+        args = parse_args([
+            "--github", "acme/web",
+            "--workflow", "ci.yml",
+            "--branch", "main",
+            "--last", "10",
+            "--no-cache",
+        ])
+
+        assert args.workflow == "ci.yml"
+        assert args.branch == "main"
+        assert args.last == 10
+        assert args.no_cache is True
+
+    def test_github_mode_excludes_other_modes(self) -> None:
+        """--github cannot be combined with --config or --logs."""
+        with pytest.raises(SystemExit):
+            parse_args(["--github", "acme/web", "--logs", "build.log"])
+
+    def test_main_reports_fetched_runs(self, monkeypatch, capsys) -> None:
+        """A successful fetch produces a report on stdout."""
+        monkeypatch.setattr("sys.argv", ["ci-time-tracker", "--github", "acme/web", "--no-cache"])
+        monkeypatch.setattr(
+            "ci_time_tracker.cli.fetch_build_logs",
+            lambda **kwargs: self._fake_logs(),
+        )
+
+        exit_code = main()
+
+        assert exit_code == 0
+        assert "test / Run npm test" in capsys.readouterr().out
+
+    def test_main_passes_options_through(self, monkeypatch) -> None:
+        """CLI options reach the fetch call."""
+        captured: dict[str, Any] = {}
+
+        def fake_fetch(**kwargs: Any) -> list[Any]:
+            captured.update(kwargs)
+            return self._fake_logs()
+
+        monkeypatch.setattr("sys.argv", [
+            "ci-time-tracker", "--github", "acme/web",
+            "--workflow", "ci.yml", "--branch", "main", "--last", "7", "--no-cache",
+        ])
+        monkeypatch.setattr("ci_time_tracker.cli.fetch_build_logs", fake_fetch)
+
+        main()
+
+        assert captured["repo"] == "acme/web"
+        assert captured["workflow"] == "ci.yml"
+        assert captured["branch"] == "main"
+        assert captured["limit"] == 7
+        assert captured["cache"] is None  # --no-cache
+
+    def test_main_uses_cache_by_default(self, monkeypatch, tmp_path) -> None:
+        """Without --no-cache a run cache is opened and passed along."""
+        captured: dict[str, Any] = {}
+
+        def fake_fetch(**kwargs: Any) -> list[Any]:
+            captured.update(kwargs)
+            return self._fake_logs()
+
+        monkeypatch.setattr("sys.argv", [
+            "ci-time-tracker", "--github", "acme/web",
+            "--cache-path", str(tmp_path / "runs.db"),
+        ])
+        monkeypatch.setattr("ci_time_tracker.cli.fetch_build_logs", fake_fetch)
+
+        main()
+
+        assert captured["cache"] is not None
+
+    def test_main_returns_3_on_api_error(self, monkeypatch, capsys) -> None:
+        """API failures exit with a dedicated code and an actionable message."""
+        from ci_time_tracker.github_api import GitHubAPIError
+
+        def fail(**kwargs: Any) -> list[Any]:
+            raise GitHubAPIError("GitHub API rate limit exceeded. Set GITHUB_TOKEN ...")
+
+        monkeypatch.setattr("sys.argv", ["ci-time-tracker", "--github", "acme/web", "--no-cache"])
+        monkeypatch.setattr("ci_time_tracker.cli.fetch_build_logs", fail)
+
+        exit_code = main()
+
+        assert exit_code == 3
+        assert "GITHUB_TOKEN" in capsys.readouterr().err
+
+    def test_main_returns_1_when_no_runs_found(self, monkeypatch, capsys) -> None:
+        """An empty result is an error, not an empty report."""
+        monkeypatch.setattr("sys.argv", ["ci-time-tracker", "--github", "acme/web", "--no-cache"])
+        monkeypatch.setattr("ci_time_tracker.cli.fetch_build_logs", lambda **kwargs: [])
+
+        exit_code = main()
+
+        assert exit_code == 1
+        assert "No workflow runs found" in capsys.readouterr().err
+
+
 class TestFileIO:
     """Unit tests for file I/O operations."""
 

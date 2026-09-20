@@ -71,6 +71,8 @@ class StepExecution:
         duration_seconds: Computed or extracted duration in seconds
         status: Execution result (success, failure, skipped)
         is_retry: Whether this execution was a retry attempt
+        job_name: Name of the job this step ran in, when known
+        runner: Label or name of the machine that ran the step, when known
     """
     name: str
     start_time: datetime | None = None
@@ -78,6 +80,8 @@ class StepExecution:
     duration_seconds: float | None = None
     status: Literal["success", "failure", "skipped"] = "success"
     is_retry: bool = False
+    job_name: str | None = None
+    runner: str | None = None
 
     def validate(self) -> list[str]:
         """Validate the step execution and return list of validation errors."""
@@ -100,11 +104,19 @@ class BuildLog:
         steps: List of step executions from the log
         total_duration: Total build duration in seconds
         timestamp: When the build occurred
+        head_sha: Commit the build ran against, when known
+        run_attempt: Attempt number of the build (1 unless it was re-run)
+        conclusion: Overall build result as reported by the provider
+        metadata: Additional provider-specific data (jobs, queue times, ...)
     """
     build_id: str | None = None
     steps: list[StepExecution] = field(default_factory=list)
     total_duration: float | None = None
     timestamp: datetime | None = None
+    head_sha: str | None = None
+    run_attempt: int = 1
+    conclusion: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> list[str]:
         """Validate the build log and return list of validation errors."""
