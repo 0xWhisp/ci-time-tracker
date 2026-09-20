@@ -4,9 +4,9 @@ Tareas ordenadas por prioridad según ROI (impacto ÷ esfuerzo) y dependencias.
 
 Esfuerzo: **S** ≤ 1 día · **M** 2–3 días · **L** 4–6 días
 
-| # | Tarea | Esfuerzo | Impacto | ROI | Depende de |
-|---|-------|----------|---------|-----|------------|
-| 1 | Arreglar bugs críticos de parsing y empaquetado | S | Alto | ★★★★★ | — |
+| # | Tarea | Esfuerzo | Impacto | ROI | Depende de | Estado |
+|---|-------|----------|---------|-----|------------|--------|
+| 1 | Arreglar bugs críticos de parsing y empaquetado | S | Alto | ★★★★★ | — | ✅ Hecha (`6dd8d99`) |
 | 2 | Ingesta directa desde la API de GitHub Actions + caché local | L | Muy alto | ★★★★★ | 1 |
 | 3 | Métricas accionables: tiempo total, costo estimado, tiempo en cola | S | Alto | ★★★★☆ | 2 |
 | 4 | Flaky real (mismo commit / reintentos) y detección de regresiones | M | Alto | ★★★★☆ | 2 |
