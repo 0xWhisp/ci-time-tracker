@@ -125,34 +125,51 @@ python -m ci_time_tracker --config .github/workflows/ci.yml
 ### Text Output (Log Mode)
 
 ```
-================================================================================
+==============================================================================================================
 CI Time Tracker Report (log mode)
-================================================================================
-Generated: 2024-01-15 10:30:45
+==============================================================================================================
+Generated: 2026-09-27 03:43:13
 Mode: log
 
 SUMMARY
---------------------------------------------------------------------------------
-  build_count: 50
-  step_count: 3
+--------------------------------------------------------------------------------------------------------------
+  build_count: 10
+  step_count: 66
+  total_execution_seconds: 1h 05m
+  job_count: 35
+  total_queue_seconds: 2m 42s
+  queue_p50_seconds: 4.0s
+  queue_p90_seconds: 10.0s
+  estimated_cost_usd: $2.81
+  priced_jobs: 35
+  pricing_source: built-in defaults
+  note: cost uses private-repository rates and GitHub's per-job rounding; public repos pay nothing for standard runners
+
+TOP TIME CONSUMERS
+--------------------------------------------------------------------------------------------------------------
+  1. build / Run tests                              45m 18s   69.2%    23 runs     $1.53
+  2. build / Install dependencies                    7m 08s   10.9%    23 runs     $0.30
+  3. build / Set up Python                           1m 43s    2.6%    23 runs     $0.08
 
 ISSUES
---------------------------------------------------------------------------------
-  [WARNING] SLOW: run-tests
-    P90: 145.20s, Max: 240.00s
-  [ERROR] FLAKY: integration
-    Failure rate: 12.0% (6/50 executions)
+--------------------------------------------------------------------------------------------------------------
+  [WARNING] SLOW: build / Install dependencies
+    P90: 28.00s, Max: 115.00s
 
 STEPS
---------------------------------------------------------------------------------
-Step Name                      Executions          P50      P90      P95      P99 Flags     
---------------------------------------------------------------------------------
-install-deps                           50    45.20s   62.10s   65.00s   70.00s           
-run-tests                              50   120.30s  145.20s  180.00s  240.00s SLOW      
-integration                            50    89.10s  102.40s  110.00s  115.00s FLAKY     
+--------------------------------------------------------------------------------------------------------------
+Step Name                               Runs     Total      P50      P90      P95      P99     Cost Flags
+--------------------------------------------------------------------------------------------------------------
+build / Run tests                         23   45m 18s  112.00s  178.00s  178.00s  179.00s    $1.53
+build / Install dependencies              23    7m 08s   10.00s   28.00s   31.00s  115.00s    $0.30 SLOW
+build / Set up Python                     23    1m 43s    2.00s    9.00s   44.00s   49.00s    $0.08
+... and 63 more steps (use --top 0 to show all)
 
-================================================================================
+==============================================================================================================
 ```
+
+Steps are ordered by the time they consume, because that is what a CI bill is
+made of. `--top N` limits the table (default 25, `0` shows everything).
 
 ### JSON Output
 
@@ -160,72 +177,93 @@ integration                            50    89.10s  102.40s  110.00s  115.00s F
 {
   "title": "CI Time Tracker Report (log mode)",
   "mode": "log",
-  "generated_at": "2024-01-15T10:30:45",
+  "generated_at": "2026-09-27T03:43:13",
   "summary": {
     "mode": "log",
-    "build_count": 50,
-    "step_count": 3
+    "build_count": 10,
+    "step_count": 66,
+    "total_execution_seconds": 3918.0,
+    "job_count": 35,
+    "total_queue_seconds": 162.0,
+    "queue_p50_seconds": 4.0,
+    "queue_p90_seconds": 10.0,
+    "estimated_cost_usd": 2.808,
+    "priced_jobs": 35,
+    "pricing_source": "built-in defaults"
   },
   "steps": [
     {
-      "name": "install-deps",
-      "execution_count": 50,
-      "success_count": 50,
+      "name": "build / Run tests",
+      "execution_count": 23,
+      "success_count": 23,
       "failure_count": 0,
       "failure_rate": 0.0,
-      "p50": 45.2,
-      "p90": 62.1,
-      "p95": 65.0,
-      "p99": 70.0,
+      "total_duration": 2718.0,
+      "mean_duration": 118.17,
+      "p50": 112.0,
+      "p90": 178.0,
+      "p95": 178.0,
+      "p99": 179.0,
       "is_slow": false,
-      "is_flaky": false
-    },
-    {
-      "name": "run-tests",
-      "execution_count": 50,
-      "success_count": 50,
-      "failure_count": 0,
-      "failure_rate": 0.0,
-      "p50": 120.3,
-      "p90": 145.2,
-      "p95": 180.0,
-      "p99": 240.0,
-      "is_slow": true,
-      "is_flaky": false
-    },
-    {
-      "name": "integration",
-      "execution_count": 50,
-      "success_count": 44,
-      "failure_count": 6,
-      "failure_rate": 0.12,
-      "p50": 89.1,
-      "p90": 102.4,
-      "p95": 110.0,
-      "p99": 115.0,
-      "is_slow": false,
-      "is_flaky": true
+      "is_flaky": false,
+      "runner": "ubuntu-22.04",
+      "estimated_cost_usd": 1.5312
     }
   ],
   "issues": [
     {
       "type": "slow",
-      "step": "run-tests",
+      "step": "build / Install dependencies",
       "severity": "warning",
-      "p90": 145.2,
-      "max_duration": 240.0
-    },
-    {
-      "type": "flaky",
-      "step": "integration",
-      "severity": "error",
-      "failure_rate": 0.12,
-      "failure_count": 6,
-      "execution_count": 50
+      "p90": 28.0,
+      "max_duration": 115.0
     }
   ]
 }
 ```
+
+## Cost Estimates
+
+Costs are estimated from the runner each job ran on, using GitHub's published
+per-minute rates for **private repositories**, rounded up per job the way
+GitHub bills. Public repositories pay nothing for standard runners.
+
+- Self-hosted runners cost `$0.00`.
+- Larger runners are priced from their core count (Linux `$0.004`/core/min,
+  Windows `$0.008`/core/min).
+- A runner with no known rate is reported under `unpriced_runners` instead of
+  being assumed free, so an incomplete estimate is never shown as complete.
+- Per-step costs are attributed proportionally and do not include the per-job
+  rounding, so they add up to slightly less than the billed total.
+
+Rates change. Override them with a JSON file of label to USD per minute:
+
+```bash
+ci-time-tracker --github acme/web --pricing pricing.json
+```
+
+```json
+{
+  "ubuntu-latest": 0.008,
+  "our-big-runner": 0.032
+}
+```
+
+## Matrix Builds
+
+GitHub names each leg of a matrix separately, so `Run tests` becomes
+`build (3.12, ubuntu-latest) / Run tests` and its siblings: one step per leg.
+`--group-matrix` merges them, which is usually what you want when asking where
+the time goes:
+
+```bash
+# Without grouping: "build (3.12, windows-latest) / Run tests  2m 59s  4.6%"
+# With grouping:    "build / Run tests                        45m 18s  69.2%"
+ci-time-tracker --github acme/web --group-matrix
+```
+
+Grouping mixes runners with different rates, so the cost of a merged step spans
+whatever machines its legs ran on.
 
 ## Detection Criteria
 

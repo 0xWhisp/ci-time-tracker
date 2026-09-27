@@ -19,6 +19,7 @@ from ci_time_tracker.github_api import (
     fetch_build_logs,
 )
 from ci_time_tracker.log_parser import parse_log
+from ci_time_tracker.pricing import load_pricing
 from ci_time_tracker.reporter import format_json, format_text, generate_report
 
 
@@ -93,6 +94,30 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         type=str,
         metavar="PATH",
         help="Location of the local run cache database. Only used with --github.",
+    )
+    
+    parser.add_argument(
+        "--pricing",
+        type=str,
+        metavar="PATH",
+        help="Path to a JSON file mapping runner labels to USD per minute, "
+             "overriding the built-in rates used for cost estimates.",
+    )
+    
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=25,
+        metavar="N",
+        help="In text output, show only the N steps that consume the most time "
+             "(default: 25). Use 0 to show every step.",
+    )
+    
+    parser.add_argument(
+        "--group-matrix",
+        action="store_true",
+        help="Merge the legs of a matrix job, so 'build (3.12, ubuntu) / Run tests' "
+             "and its siblings count as one step.",
     )
     
     # Optional arguments
@@ -226,6 +251,18 @@ def main() -> int:
     try:
         args = parse_args()
         
+        # Runner pricing for cost estimates (log and GitHub modes)
+        pricing = None
+        if args.pricing:
+            try:
+                pricing = load_pricing(args.pricing)
+            except OSError as e:
+                print(f"Error reading pricing file: {e}", file=sys.stderr)
+                return 1
+            except ValueError as e:
+                print(f"Error parsing pricing file: {e}", file=sys.stderr)
+                return 2
+        
         # Determine mode
         if args.config:
             # Config analysis mode
@@ -308,7 +345,7 @@ def main() -> int:
                 return 2
             
             # Analyze
-            result = analyze_logs(parsed_logs)
+            result = analyze_logs(parsed_logs, pricing, args.group_matrix)
 
         elif args.github:
             # GitHub Actions API mode
@@ -339,7 +376,7 @@ def main() -> int:
                 return 1
 
             # Analyze
-            result = analyze_logs(logs)
+            result = analyze_logs(logs, pricing, args.group_matrix)
 
         else:
             # Should never reach here due to argparse
@@ -353,7 +390,7 @@ def main() -> int:
         if args.format == "json":
             output = format_json(report)
         else:
-            output = format_text(report)
+            output = format_text(report, args.top)
         
         # Write output
         try:

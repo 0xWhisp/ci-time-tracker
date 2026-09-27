@@ -8,7 +8,7 @@ Esfuerzo: **S** ≤ 1 día · **M** 2–3 días · **L** 4–6 días
 |---|-------|----------|---------|-----|------------|--------|
 | 1 | Arreglar bugs críticos de parsing y empaquetado | S | Alto | ★★★★★ | — | ✅ Hecha (`6dd8d99`) |
 | 2 | Ingesta directa desde la API de GitHub Actions + caché local | L | Muy alto | ★★★★★ | 1 | ✅ Hecha |
-| 3 | Métricas accionables: tiempo total, costo estimado, tiempo en cola | S | Alto | ★★★★☆ | 2 | ⬜ Pendiente |
+| 3 | Métricas accionables: tiempo total, costo estimado, tiempo en cola | S | Alto | ★★★★☆ | 2 | ✅ Hecha |
 | 4 | Flaky real (mismo commit / reintentos) y detección de regresiones | M | Alto | ★★★★☆ | 2 | ⬜ Pendiente |
 | 5 | Salida Markdown (`$GITHUB_STEP_SUMMARY`) y umbrales `--fail-on` | S | Medio | ★★★★☆ | 3, 4 | ⬜ Pendiente |
 | 6 | CI propio, publicación en PyPI y README con demo | S | Medio | ★★★★☆ | 1–5 | ⬜ Pendiente |
@@ -55,9 +55,20 @@ necesita un token (sin él GitHub permite 60 peticiones por hora).
 
 ## 3. Métricas accionables
 
-- Tiempo total consumido por paso/job (duración × ejecuciones) y ranking por impacto.
-- Costo estimado en USD por tipo de runner (tabla configurable de precios por minuto).
-- Tiempo en cola vs. tiempo de ejecución.
+- [x] Tiempo total consumido por paso (duración × ejecuciones) y ranking por impacto;
+      la tabla se ordena por tiempo consumido y `--top N` la recorta.
+- [x] Costo estimado en USD por runner, con el redondeo por job que aplica GitHub y
+      tabla de precios configurable (`--pricing`). Los runners sin tarifa conocida se
+      listan en `unpriced_runners` en vez de asumirse gratis.
+- [x] Tiempo en cola (de los datos de job) separado del tiempo de ejecución, con p50 y p90.
+- [x] `--group-matrix` para unir las patas de una matriz.
+
+**Hallazgo:** sin agrupar la matriz el titular engaña. En psf/requests, el top decía
+"build (3.12, windows-latest) / Run tests — 4,6%" cuando `Run tests` en realidad se lleva
+el **69,2%** del tiempo total. De ahí `--group-matrix`.
+
+**Posible siguiente paso:** comparar costo por runner de la misma matriz (Windows sale
+2× y macOS 10× más caro que Linux por minuto), para recomendar mover legs de plataforma.
 
 ## 4. Flaky real y regresiones
 

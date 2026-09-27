@@ -146,6 +146,12 @@ class StepStatistics:
         is_slow: Whether the step is flagged as slow
         is_flaky: Whether the step is flagged as flaky
         failure_rate: Ratio of failures to total executions
+        total_duration: Sum of all recorded durations, i.e. the time this step
+            has consumed across every build
+        mean_duration: Average recorded duration
+        runner: Runner the step ran on, when known
+        estimated_cost_usd: Cost attributed to this step, when the runner's
+            rate is known
     """
     name: str
     execution_count: int = 0
@@ -159,6 +165,10 @@ class StepStatistics:
     is_slow: bool = False
     is_flaky: bool = False
     failure_rate: float = 0.0
+    total_duration: float = 0.0
+    mean_duration: float | None = None
+    runner: str | None = None
+    estimated_cost_usd: float | None = None
 
     def validate(self) -> list[str]:
         """Validate the statistics and return list of validation errors."""

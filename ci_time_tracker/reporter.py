@@ -50,12 +50,16 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
                 "success_count": step.success_count,
                 "failure_count": step.failure_count,
                 "failure_rate": step.failure_rate,
+                "total_duration": step.total_duration,
+                "mean_duration": step.mean_duration,
                 "p50": step.p50,
                 "p90": step.p90,
                 "p95": step.p95,
                 "p99": step.p99,
                 "is_slow": step.is_slow,
                 "is_flaky": step.is_flaky,
+                "runner": step.runner,
+                "estimated_cost_usd": step.estimated_cost_usd,
             }
         elif isinstance(step, PipelineStep):
             # Config mode - include step info
@@ -71,6 +75,11 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
             step_dict = {"name": str(step)}
         
         steps_data.append(step_dict)
+    
+    # Order log-mode steps by the time they consume, so the biggest
+    # contributors come first in every output format.
+    if result.mode == "log":
+        steps_data.sort(key=lambda step: step.get("total_duration") or 0.0, reverse=True)
     
     # Build issues list
     issues: list[dict[str, Any]] = []
@@ -132,38 +141,131 @@ def format_json(report: Report) -> str:
     return json.dumps(report.to_dict(), indent=2)
 
 
-def format_text(report: Report) -> str:
+# Report width per mode: the log table carries more columns than the config one
+_LOG_WIDTH = 110
+_CONFIG_WIDTH = 80
+
+# How many steps the "top time consumers" ranking shows
+_TOP_CONSUMERS = 5
+
+
+def format_duration(seconds: float | None) -> str:
+    """Format a duration in seconds for humans (45.0s, 12m 30s, 3h 05m)."""
+    if seconds is None:
+        return "N/A"
+    
+    seconds = float(seconds)
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    
+    minutes, remainder = divmod(int(round(seconds)), 60)
+    if minutes < 60:
+        return f"{minutes}m {remainder:02d}s"
+    
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def format_cost(usd: float | None) -> str:
+    """Format a cost in US dollars, or N/A when it could not be estimated."""
+    if usd is None:
+        return "N/A"
+    return f"${usd:,.2f}"
+
+
+def _format_summary_value(key: str, value: Any) -> str:
+    """Format a summary value according to what the key measures."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if key.endswith(("_seconds", "_duration")):
+            return format_duration(value)
+        if key.endswith("_usd"):
+            return format_cost(value)
+    
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    
+    return str(value)
+
+
+def _format_top_consumers(steps: list[dict[str, Any]], width: int) -> list[str]:
+    """Rank the steps that consume the most time across all builds.
+    
+    Percentiles say how long a step takes; this says where the time actually
+    goes, which is what a CI budget is spent on.
+    """
+    consumers = sorted(
+        (step for step in steps if step.get("total_duration")),
+        key=lambda step: step["total_duration"],
+        reverse=True,
+    )[:_TOP_CONSUMERS]
+    
+    if not consumers:
+        return []
+    
+    total = sum(step.get("total_duration") or 0.0 for step in steps)
+    lines = ["TOP TIME CONSUMERS", "-" * width]
+    
+    for rank, step in enumerate(consumers, start=1):
+        consumed = step["total_duration"]
+        share = f"{consumed / total * 100:.1f}%" if total else "N/A"
+        cost = step.get("estimated_cost_usd")
+        cost_str = format_cost(cost) if cost is not None else ""
+        
+        lines.append(
+            f"  {rank}. {step['name'][:44]:<44} {format_duration(consumed):>9} "
+            f"{share:>7} {step.get('execution_count', 0):>5} runs {cost_str:>9}"
+        )
+    
+    lines.append("")
+    return lines
+
+
+def format_text(report: Report, top: int | None = None) -> str:
     """Format a Report as human-readable text.
     
     Args:
         report: The report to format
+        top: Show only the N steps that consume the most time; None or 0
+            shows every step. Percentiles alone make a long table hard to
+            read on a matrix build, where each leg is its own step.
         
     Returns:
         Formatted text string ready for console output
     """
     lines: list[str] = []
+    width = _LOG_WIDTH if report.mode == "log" else _CONFIG_WIDTH
     
     # Header
-    lines.append("=" * 80)
+    lines.append("=" * width)
     lines.append(report.title)
-    lines.append("=" * 80)
+    lines.append("=" * width)
     lines.append(f"Generated: {report.generated_at.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"Mode: {report.mode}")
     lines.append("")
     
     # Summary
     lines.append("SUMMARY")
-    lines.append("-" * 80)
+    lines.append("-" * width)
     for key, value in report.summary.items():
         if key == "mode":
             continue  # Already displayed
-        lines.append(f"  {key}: {value}")
+        lines.append(f"  {key}: {_format_summary_value(key, value)}")
+    
+    if report.summary.get("estimated_cost_usd") is not None:
+        lines.append(
+            "  note: cost uses private-repository rates and GitHub's per-job "
+            "rounding; public repos pay nothing for standard runners"
+        )
     lines.append("")
+    
+    # Where the time goes
+    if report.mode == "log":
+        lines.extend(_format_top_consumers(report.steps, width))
     
     # Issues
     if report.issues:
         lines.append("ISSUES")
-        lines.append("-" * 80)
+        lines.append("-" * width)
         for issue in report.issues:
             issue_type = issue["type"].upper()
             step = issue["step"]
@@ -187,28 +289,29 @@ def format_text(report: Report) -> str:
     
     # Steps
     lines.append("STEPS")
-    lines.append("-" * 80)
+    lines.append("-" * width)
     
     if report.mode == "log":
         # Log mode - show statistics
         lines.append(
-            f"{'Step Name':<30} {'Executions':>12} {'P50':>8} {'P90':>8} {'P95':>8} {'P99':>8} {'Flags':<10}"
+            f"{'Step Name':<38} {'Runs':>5} {'Total':>9} {'P50':>8} {'P90':>8} "
+            f"{'P95':>8} {'P99':>8} {'Cost':>8} {'Flags':<10}"
         )
-        lines.append("-" * 80)
+        lines.append("-" * width)
         
-        for step in report.steps:
-            name = step["name"][:29]  # Truncate long names
+        shown = report.steps[:top] if top else report.steps
+        
+        for step in shown:
+            name = step["name"][:37]  # Truncate long names
             exec_count = step.get("execution_count", 0)
             
-            p50 = step.get("p50")
-            p90 = step.get("p90")
-            p95 = step.get("p95")
-            p99 = step.get("p99")
-            
-            p50_str = f"{p50:.2f}s" if p50 is not None else "N/A"
-            p90_str = f"{p90:.2f}s" if p90 is not None else "N/A"
-            p95_str = f"{p95:.2f}s" if p95 is not None else "N/A"
-            p99_str = f"{p99:.2f}s" if p99 is not None else "N/A"
+            total_str = format_duration(step.get("total_duration"))
+            p50_str = f"{step['p50']:.2f}s" if step.get("p50") is not None else "N/A"
+            p90_str = f"{step['p90']:.2f}s" if step.get("p90") is not None else "N/A"
+            p95_str = f"{step['p95']:.2f}s" if step.get("p95") is not None else "N/A"
+            p99_str = f"{step['p99']:.2f}s" if step.get("p99") is not None else "N/A"
+            cost = step.get("estimated_cost_usd")
+            cost_str = format_cost(cost) if cost is not None else "N/A"
             
             flags = []
             if step.get("is_slow"):
@@ -218,12 +321,17 @@ def format_text(report: Report) -> str:
             flags_str = ",".join(flags) if flags else ""
             
             lines.append(
-                f"{name:<30} {exec_count:>12} {p50_str:>8} {p90_str:>8} {p95_str:>8} {p99_str:>8} {flags_str:<10}"
+                f"{name:<38} {exec_count:>5} {total_str:>9} {p50_str:>8} {p90_str:>8} "
+                f"{p95_str:>8} {p99_str:>8} {cost_str:>8} {flags_str:<10}"
             )
+        
+        hidden = len(report.steps) - len(shown)
+        if hidden > 0:
+            lines.append(f"... and {hidden} more steps (use --top 0 to show all)")
     else:
         # Config mode - show steps and estimates
         lines.append(f"{'Step Name':<40} {'Stage':<20} {'Estimate':<15}")
-        lines.append("-" * 80)
+        lines.append("-" * width)
         
         for step in report.steps:
             name = step["name"][:39]
@@ -234,7 +342,7 @@ def format_text(report: Report) -> str:
             lines.append(f"{name:<40} {stage:<20} {estimate_str:<15}")
     
     lines.append("")
-    lines.append("=" * 80)
+    lines.append("=" * width)
     
     return "\n".join(lines)
 
