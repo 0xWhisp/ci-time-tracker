@@ -105,9 +105,21 @@ UTF-8. Ahora la salida es siempre UTF-8, con un test que simula ese stdout.
 
 ## 6. CI propio y publicación
 
-- Workflow con matriz Python 3.10–3.13, lint y cobertura.
-- Publicación en PyPI con trusted publishing en cada tag.
-- README con GIF/demo, badges y ejemplo real de salida.
+- [x] Workflow con matriz Python 3.10–3.14 en Linux y Windows, con cobertura. Primer run
+      verde ([37180942062](https://github.com/0xWhisp/ci-time-tracker/actions/runs/37180942062)):
+      es la primera verificación real del soporte de 3.10 y de Windows.
+- [x] Workflow de release por tag con trusted publishing; comprueba que tag, `pyproject` y
+      `__version__` coincidan y que pasen los tests antes de publicar.
+- [x] Demo en vivo: el CI corre la herramienta sobre su propio historial y deja el reporte
+      Markdown en la página de resumen de cada run. Badge de CI en el README.
+- [ ] **Publicar en PyPI** — requiere configurar el trusted publisher en la cuenta de PyPI
+      y crear el environment `pypi` en GitHub (pasos en el README, "Releasing").
+- [ ] Lint (p. ej. ruff): no incluido; el código nunca pasó por un linter y conviene
+      hacerlo en un cambio aparte.
+
+**Nota:** en el primer run el job del reporte falló de forma esperada: corre durante el
+propio run y todavía no existía ningún run completado de `ci.yml` (sale con código 1, "No
+workflow runs found"). Está marcado `continue-on-error`, así que no tumba el build.
 
 ## 7. GitHub Action para PRs
 
