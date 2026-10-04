@@ -1,5 +1,7 @@
 # ci-time-tracker
 
+[![CI](https://github.com/0xWhisp/ci-time-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/0xWhisp/ci-time-tracker/actions/workflows/ci.yml)
+
 A minimal CLI tool for analyzing CI/CD pipeline configurations and build logs to identify performance bottlenecks and flaky steps.
 
 ## Features
@@ -396,6 +398,28 @@ pytest
 # Run with coverage
 pytest --cov=ci_time_tracker
 ```
+
+CI runs the suite on Linux and Windows for Python 3.10 to 3.14, then runs
+the tool on its own CI history: each run's summary page shows the resulting
+Markdown report.
+
+### Releasing
+
+Releases are published to PyPI by `.github/workflows/release.yml` when a
+version tag is pushed, using PyPI trusted publishing (no token in the repo).
+
+One-time setup on PyPI: add a trusted publisher for project `ci-time-tracker`
+with owner `0xWhisp`, repository `ci-time-tracker`, workflow `release.yml`
+and environment `pypi`, and create the `pypi` environment in the repository
+settings.
+
+Then, for each release:
+
+1. Bump `version` in `pyproject.toml` and `__version__` in
+   `ci_time_tracker/__init__.py` (a test checks they agree).
+2. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
+
+The workflow refuses to publish when the tag and the versions disagree.
 
 ## License
 
