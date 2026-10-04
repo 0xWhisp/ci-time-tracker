@@ -10,7 +10,7 @@ Esfuerzo: **S** ≤ 1 día · **M** 2–3 días · **L** 4–6 días
 | 2 | Ingesta directa desde la API de GitHub Actions + caché local | L | Muy alto | ★★★★★ | 1 | ✅ Hecha |
 | 3 | Métricas accionables: tiempo total, costo estimado, tiempo en cola | S | Alto | ★★★★☆ | 2 | ✅ Hecha |
 | 4 | Flaky real (mismo commit / reintentos) y detección de regresiones | M | Alto | ★★★★☆ | 2 | ✅ Hecha |
-| 5 | Salida Markdown (`$GITHUB_STEP_SUMMARY`) y umbrales `--fail-on` | S | Medio | ★★★★☆ | 3, 4 | ⬜ Pendiente |
+| 5 | Salida Markdown (`$GITHUB_STEP_SUMMARY`) y umbrales `--fail-on` | S | Medio | ★★★★☆ | 3, 4 | ✅ Hecha |
 | 6 | CI propio, publicación en PyPI y README con demo | S | Medio | ★★★★☆ | 1–5 | ⬜ Pendiente |
 | 7 | GitHub Action que comenta en PRs el impacto en tiempos | M | Alto | ★★★☆☆ | 5, 6 | ⬜ Pendiente |
 | 8 | Recomendaciones cruzando config y datos reales | L | Alto (diferenciador) | ★★★☆☆ | 2, 3 | ⬜ Pendiente |
@@ -92,8 +92,16 @@ reales. La lógica está cubierta por tests con casos construidos.
 
 ## 5. Salida Markdown y umbrales
 
-- `--format markdown`, apto para `$GITHUB_STEP_SUMMARY`.
-- `--fail-on flaky,regression` y `--max-duration` para usarlo como gate (exit code ≠ 0).
+- [x] `--format markdown`, apto para `$GITHUB_STEP_SUMMARY` y comentarios de PR: números
+      clave, issues con su evidencia, top de consumo y la tabla completa colapsada.
+- [x] `--fail-on flaky,regression` y `--max-duration SEGUNDOS` (mediana de duración de
+      build) como gates: salida con código 4, después de escribir el reporte.
+- [x] Tabla de códigos de salida en el README.
+
+**Bug encontrado al probar de punta a punta:** en Windows, con la salida redirigida a un
+archivo o pipe (justo el caso de `>> $GITHUB_STEP_SUMMARY`), Python usa cp1252 y el emoji
+tiraba la corrida con un error `charmap`. Los tests no lo veían porque pytest captura en
+UTF-8. Ahora la salida es siempre UTF-8, con un test que simula ese stdout.
 
 ## 6. CI propio y publicación
 

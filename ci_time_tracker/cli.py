@@ -21,7 +21,13 @@ from ci_time_tracker.github_api import (
 )
 from ci_time_tracker.log_parser import parse_log
 from ci_time_tracker.pricing import load_pricing
-from ci_time_tracker.reporter import format_json, format_text, generate_report
+from ci_time_tracker.gates import GATE_CHOICES, evaluate_gates
+from ci_time_tracker.reporter import (
+    format_json,
+    format_markdown,
+    format_text,
+    generate_report,
+)
 
 
 def _positive_percentage(value: str) -> float:
@@ -33,6 +39,28 @@ def _positive_percentage(value: str) -> float:
     if number <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
     return number / 100.0
+
+
+def _gate_list(value: str) -> set[str]:
+    """argparse type: a comma-separated list of findings to fail on."""
+    gates = {item.strip().lower() for item in value.split(",") if item.strip()}
+    unknown = gates - set(GATE_CHOICES)
+    if not gates or unknown:
+        raise argparse.ArgumentTypeError(
+            f"expected a comma-separated list of: {', '.join(GATE_CHOICES)}"
+        )
+    return gates
+
+
+def _positive_seconds(value: str) -> float:
+    """argparse type: a duration in seconds above zero."""
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a number")
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return number
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
@@ -145,9 +173,26 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--format",
         type=str,
-        choices=["json", "text"],
+        choices=["json", "text", "markdown"],
         default="text",
-        help="Output format (default: text)",
+        help="Output format (default: text). Markdown suits $GITHUB_STEP_SUMMARY "
+             "and PR comments.",
+    )
+    
+    parser.add_argument(
+        "--fail-on",
+        type=_gate_list,
+        default=set(),
+        metavar="FINDINGS",
+        help="Exit with code 4 when any of these findings is reported: "
+             f"a comma-separated list of {', '.join(GATE_CHOICES)}.",
+    )
+    
+    parser.add_argument(
+        "--max-duration",
+        type=_positive_seconds,
+        metavar="SECONDS",
+        help="Exit with code 4 when the median build duration exceeds SECONDS.",
     )
     
     parser.add_argument(
@@ -263,12 +308,29 @@ def load_estimates(path: str) -> dict[str, float]:
     return estimates
 
 
+def _use_utf8_output() -> None:
+    """Write UTF-8 to stdout and stderr whatever the platform default is.
+    
+    On Windows, output sent to a pipe or a file (such as
+    $GITHUB_STEP_SUMMARY) uses the ANSI code page, which cannot encode emoji
+    or many step names and would crash the run halfway through the report.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            # Not a reconfigurable text stream (e.g. replaced in tests)
+            pass
+
+
 def main() -> int:
     """Main entry point for the CLI.
     
     Returns:
         Exit code (0 for success, non-zero for error)
     """
+    _use_utf8_output()
+    
     try:
         args = parse_args()
         
@@ -420,6 +482,8 @@ def main() -> int:
         # Format output
         if args.format == "json":
             output = format_json(report)
+        elif args.format == "markdown":
+            output = format_markdown(report, args.top)
         else:
             output = format_text(report, args.top)
         
@@ -429,6 +493,18 @@ def main() -> int:
         except IOError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
+        
+        # Quality gates run after the report is written, so a failing
+        # pipeline still shows why it failed
+        if args.max_duration is not None and "build_p50_seconds" not in result.metadata:
+            print("Warning: --max-duration not checked: no build durations known", file=sys.stderr)
+        
+        reasons = evaluate_gates(result, args.fail_on, args.max_duration)
+        if reasons:
+            print("Gate failed:", file=sys.stderr)
+            for reason in reasons:
+                print(f"  - {reason}", file=sys.stderr)
+            return 4
         
         return 0
         

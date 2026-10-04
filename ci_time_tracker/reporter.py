@@ -188,9 +188,9 @@ def _format_summary_value(key: str, value: Any) -> str:
     return str(value)
 
 
-def _format_top_consumers(steps: list[dict[str, Any]], width: int) -> list[str]:
-    """Rank the steps that consume the most time across all builds.
-    
+def _rank_consumers(steps: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
+    """The steps that consume the most time, each with its share of the total.
+
     Percentiles say how long a step takes; this says where the time actually
     goes, which is what a CI budget is spent on.
     """
@@ -199,24 +199,33 @@ def _format_top_consumers(steps: list[dict[str, Any]], width: int) -> list[str]:
         key=lambda step: step["total_duration"],
         reverse=True,
     )[:_TOP_CONSUMERS]
-    
-    if not consumers:
-        return []
-    
+
     total = sum(step.get("total_duration") or 0.0 for step in steps)
+
+    return [
+        (step, f"{step['total_duration'] / total * 100:.1f}%" if total else "N/A")
+        for step in consumers
+    ]
+
+
+def _format_top_consumers(steps: list[dict[str, Any]], width: int) -> list[str]:
+    """Text section ranking the steps that consume the most time."""
+    ranked = _rank_consumers(steps)
+
+    if not ranked:
+        return []
+
     lines = ["TOP TIME CONSUMERS", "-" * width]
-    
-    for rank, step in enumerate(consumers, start=1):
-        consumed = step["total_duration"]
-        share = f"{consumed / total * 100:.1f}%" if total else "N/A"
+
+    for rank, (step, share) in enumerate(ranked, start=1):
         cost = step.get("estimated_cost_usd")
         cost_str = format_cost(cost) if cost is not None else ""
-        
+
         lines.append(
-            f"  {rank}. {step['name'][:44]:<44} {format_duration(consumed):>9} "
+            f"  {rank}. {step['name'][:44]:<44} {format_duration(step['total_duration']):>9} "
             f"{share:>7} {step.get('execution_count', 0):>5} runs {cost_str:>9}"
         )
-    
+
     lines.append("")
     return lines
 
@@ -394,6 +403,137 @@ def format_text(report: Report, top: int | None = None) -> str:
     lines.append("")
     lines.append("=" * width)
     
+    return "\n".join(lines)
+
+
+_ISSUE_LABELS = {
+    "regression": "⚠️ Regression",
+    "flaky": "❌ Flaky",
+}
+
+
+def _md_cell(value: Any) -> str:
+    """Escape a value so it cannot break a Markdown table row."""
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
+def _md_seconds(value: float | None) -> str:
+    return format_duration(value) if value is not None else "–"
+
+
+def format_markdown(report: Report, top: int | None = None) -> str:
+    """Format a Report as GitHub-flavored Markdown.
+
+    Meant for a run's summary page ($GITHUB_STEP_SUMMARY) and PR comments:
+    the headline numbers, then the issues, then where the time goes, with the
+    full step table collapsed so the page stays short.
+
+    Args:
+        report: The report to format
+        top: Show only the N steps that consume the most time in the step
+            table; None or 0 shows every step
+
+    Returns:
+        Markdown text
+    """
+    summary = report.summary
+    lines: list[str] = [f"## {report.title}", ""]
+
+    facts = []
+    if "build_count" in summary:
+        builds = summary["build_count"]
+        facts.append(f"**{builds}** build{'s' if builds != 1 else ''}")
+    if summary.get("build_p50_seconds") is not None:
+        facts.append(f"median build **{format_duration(summary['build_p50_seconds'])}**")
+    if summary.get("total_execution_seconds") is not None:
+        facts.append(f"**{format_duration(summary['total_execution_seconds'])}** of execution")
+    if summary.get("total_queue_seconds") is not None:
+        facts.append(f"**{format_duration(summary['total_queue_seconds'])}** queued")
+    if summary.get("estimated_cost_usd") is not None:
+        facts.append(f"**{format_cost(summary['estimated_cost_usd'])}** estimated cost")
+    if facts:
+        lines += [" · ".join(facts), ""]
+
+    if report.mode == "log":
+        if report.issues:
+            lines += ["### Issues", ""]
+            for issue in report.issues:
+                label = _ISSUE_LABELS.get(issue["type"], issue["type"].title())
+                lines.append(f"- {label}: `{issue['step']}`")
+                for detail in _format_issue_details(issue):
+                    lines.append(f"  - {detail.strip()}")
+            lines.append("")
+        else:
+            lines += ["✅ No flaky steps or regressions found.", ""]
+
+        ranked = _rank_consumers(report.steps)
+        if ranked:
+            lines += [
+                "### Top time consumers",
+                "",
+                "| # | Step | Total | Share | Runs | Cost |",
+                "|--:|------|------:|------:|-----:|-----:|",
+            ]
+            for rank, (step, share) in enumerate(ranked, start=1):
+                cost = step.get("estimated_cost_usd")
+                lines.append(
+                    f"| {rank} | {_md_cell(step['name'])} | {format_duration(step['total_duration'])} "
+                    f"| {share} | {step.get('execution_count', 0)} "
+                    f"| {format_cost(cost) if cost is not None else '–'} |"
+                )
+            lines.append("")
+
+        shown = report.steps[:top] if top else report.steps
+        lines += [
+            f"<details><summary>All steps ({len(report.steps)})</summary>",
+            "",
+            "| Step | Runs | Total | P50 | P90 | P99 | Cost | Flags |",
+            "|------|-----:|------:|----:|----:|----:|-----:|-------|",
+        ]
+        for step in shown:
+            flags = [
+                flag for flag, key in (("REGR", "is_regression"), ("FLAKY", "is_flaky")) if step.get(key)
+            ]
+            cost = step.get("estimated_cost_usd")
+            lines.append(
+                f"| {_md_cell(step['name'])} | {step.get('execution_count', 0)} "
+                f"| {_md_seconds(step.get('total_duration'))} | {_md_seconds(step.get('p50'))} "
+                f"| {_md_seconds(step.get('p90'))} | {_md_seconds(step.get('p99'))} "
+                f"| {format_cost(cost) if cost is not None else '–'} | {' '.join(flags)} |"
+            )
+        hidden = len(report.steps) - len(shown)
+        if hidden > 0:
+            lines += ["", f"…and {hidden} more steps."]
+        lines += ["", "</details>", ""]
+
+        notes = []
+        if summary.get("flaky_detection") == "same-commit":
+            notes.append("flaky = failed and passed on the same commit")
+        elif summary.get("flaky_detection") == "failure-rate":
+            notes.append("flaky by failure rate only (no commit data)")
+        if "regression_checked_steps" in summary:
+            notes.append(
+                f"regressions checked on {summary['regression_checked_steps']} steps with "
+                f"≥{summary.get('regression_min_builds', '?')} builds"
+            )
+        if summary.get("estimated_cost_usd") is not None:
+            notes.append("cost at private-repository rates")
+        if notes:
+            lines += [f"<sub>{'; '.join(notes)}.</sub>", ""]
+
+    else:
+        lines += [
+            "| Step | Stage | Estimate |",
+            "|------|-------|---------:|",
+        ]
+        for step in report.steps:
+            estimate = step.get("estimated_duration")
+            lines.append(
+                f"| {_md_cell(step['name'])} | {_md_cell(step.get('stage') or '')} "
+                f"| {_md_seconds(estimate)} |"
+            )
+        lines.append("")
+
     return "\n".join(lines)
 
 

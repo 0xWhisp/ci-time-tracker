@@ -247,6 +247,51 @@ psf/requests.)
 }
 ```
 
+## Using It in CI
+
+### Run summary in Markdown
+
+`--format markdown` renders the report for a workflow run's summary page or a
+PR comment: headline numbers, the issues with their evidence, the top time
+consumers, and the full step table collapsed.
+
+```yaml
+- name: CI time report
+  run: |
+    pip install git+https://github.com/0xWhisp/ci-time-tracker.git
+    ci-time-tracker --github ${{ github.repository }} --workflow ci.yml       --last 100 --group-matrix --format markdown >> "$GITHUB_STEP_SUMMARY"
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Output is always UTF-8, including on Windows runners.
+
+### Quality gates
+
+Reporting an issue does not fail the run. Gates do:
+
+```bash
+# Fail when a step is flaky or has regressed
+ci-time-tracker --github acme/web --fail-on flaky,regression
+
+# Fail when the median build takes longer than 10 minutes
+ci-time-tracker --github acme/web --max-duration 600
+```
+
+The report is written first, so a failing pipeline still shows why; the reasons
+are also printed to stderr. The median build duration counts each build once,
+leaving out the earlier attempts of re-runs.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Report written, gates passed |
+| 1 | File not found or unreadable, or nothing to analyze |
+| 2 | Invalid configuration, log, estimates or pricing file |
+| 3 | GitHub API error (rate limit, permissions, not found) |
+| 4 | A quality gate failed |
+
 ## Cost Estimates
 
 Costs are estimated from the runner each job ran on, using GitHub's published

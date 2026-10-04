@@ -321,6 +321,19 @@ def analyze_logs(
         "step_count": len(step_stats),
         "total_execution_seconds": sum(stats.total_duration for stats in step_stats),
     }
+    
+    # How long a build takes end to end; superseded attempts are left out so
+    # that a re-run build is not counted twice
+    build_durations = [
+        log.total_duration
+        for log in logs
+        if log.total_duration is not None and not log.metadata.get("superseded_attempt")
+    ]
+    if build_durations:
+        build_percentiles = compute_percentiles(build_durations)
+        metadata["build_p50_seconds"] = build_percentiles["p50"]
+        metadata["build_p90_seconds"] = build_percentiles["p90"]
+    
     if group_matrix:
         metadata["grouping"] = "matrix legs merged"
 
