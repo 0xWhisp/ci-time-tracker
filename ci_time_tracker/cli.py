@@ -13,6 +13,7 @@ from typing import Any
 from ci_time_tracker.analyzer import analyze_config, analyze_logs
 from ci_time_tracker.cache import RunCache
 from ci_time_tracker.config_parser import parse_config
+from ci_time_tracker.detection import DEFAULT_REGRESSION_THRESHOLD
 from ci_time_tracker.github_api import (
     DEFAULT_RUN_LIMIT,
     GitHubAPIError,
@@ -21,6 +22,17 @@ from ci_time_tracker.github_api import (
 from ci_time_tracker.log_parser import parse_log
 from ci_time_tracker.pricing import load_pricing
 from ci_time_tracker.reporter import format_json, format_text, generate_report
+
+
+def _positive_percentage(value: str) -> float:
+    """argparse type: a percentage above zero, returned as a fraction."""
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a number")
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return number / 100.0
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
@@ -118,6 +130,15 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Merge the legs of a matrix job, so 'build (3.12, ubuntu) / Run tests' "
              "and its siblings count as one step.",
+    )
+    
+    parser.add_argument(
+        "--regression-threshold",
+        type=_positive_percentage,
+        default=DEFAULT_REGRESSION_THRESHOLD,
+        metavar="PCT",
+        help="Report a step as regressed when its median duration rose by at least "
+             f"PCT percent (default: {DEFAULT_REGRESSION_THRESHOLD * 100:.0f}).",
     )
     
     # Optional arguments
@@ -345,7 +366,12 @@ def main() -> int:
                 return 2
             
             # Analyze
-            result = analyze_logs(parsed_logs, pricing, args.group_matrix)
+            result = analyze_logs(
+                parsed_logs,
+                pricing,
+                args.group_matrix,
+                regression_threshold=args.regression_threshold,
+            )
 
         elif args.github:
             # GitHub Actions API mode
@@ -376,7 +402,12 @@ def main() -> int:
                 return 1
 
             # Analyze
-            result = analyze_logs(logs, pricing, args.group_matrix)
+            result = analyze_logs(
+                logs,
+                pricing,
+                args.group_matrix,
+                regression_threshold=args.regression_threshold,
+            )
 
         else:
             # Should never reach here due to argparse

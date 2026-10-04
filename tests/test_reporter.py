@@ -88,14 +88,14 @@ simple_step_dicts = st.fixed_dictionaries({
     "failure_count": st.integers(min_value=0, max_value=1000),
     "p50": st.floats(min_value=0, max_value=3600, allow_nan=False, allow_infinity=False),
     "p90": st.floats(min_value=0, max_value=3600, allow_nan=False, allow_infinity=False),
-    "is_slow": st.booleans(),
+    "is_regression": st.booleans(),
     "is_flaky": st.booleans(),
     "failure_rate": st.floats(min_value=0, max_value=1, allow_nan=False, allow_infinity=False),
 })
 
 # Generate issue dictionaries
 issue_dicts = st.fixed_dictionaries({
-    "type": st.sampled_from(["slow", "flaky"]),
+    "type": st.sampled_from(["regression", "flaky"]),
     "step": step_names,
     "message": st.text(min_size=1, max_size=200).filter(lambda s: s.strip()),
 })
@@ -104,7 +104,7 @@ issue_dicts = st.fixed_dictionaries({
 summary_dicts = st.fixed_dictionaries({
     "total_builds": st.integers(min_value=0, max_value=10000),
     "total_steps": st.integers(min_value=0, max_value=100),
-    "slow_steps_count": st.integers(min_value=0, max_value=100),
+    "regressed_steps_count": st.integers(min_value=0, max_value=100),
     "flaky_steps_count": st.integers(min_value=0, max_value=100),
 })
 
@@ -172,7 +172,7 @@ step_statistics_strategy = st.builds(
     p90=st.floats(min_value=0.1, max_value=3600, allow_nan=False, allow_infinity=False),
     p95=st.floats(min_value=0.1, max_value=3600, allow_nan=False, allow_infinity=False),
     p99=st.floats(min_value=0.1, max_value=3600, allow_nan=False, allow_infinity=False),
-    is_slow=st.booleans(),
+    is_regression=st.booleans(),
     is_flaky=st.booleans(),
     failure_rate=st.floats(min_value=0.0, max_value=1.0, allow_nan=False, allow_infinity=False),
 )
@@ -215,7 +215,7 @@ class TestReportCompleteness:
         result = AnalysisResult(
             mode="log",
             steps=step_stats,
-            slowest_steps=[s.name for s in step_stats if s.is_slow],
+            regressed_steps=[s.name for s in step_stats if s.is_regression],
             flaky_steps=[s.name for s in step_stats if s.is_flaky],
             metadata={"build_count": len(step_stats)},
         )
@@ -261,8 +261,8 @@ class TestReportCompleteness:
             assert step_dict["p99"] == original_step.p99
             
             # Flags
-            assert "is_slow" in step_dict
-            assert step_dict["is_slow"] == original_step.is_slow
+            assert "is_regression" in step_dict
+            assert step_dict["is_regression"] == original_step.is_regression
             
             assert "is_flaky" in step_dict
             assert step_dict["is_flaky"] == original_step.is_flaky
@@ -321,18 +321,18 @@ class TestReportCompleteness:
         **Feature: ci-time-tracker, Property 7: Report completeness**
         
         *For any* analysis result, the issues list in the report SHALL contain
-        entries for all steps flagged as slow or flaky.
+        entries for all steps flagged as regressed or flaky.
         
         **Validates: Requirements 5.1, 5.2, 5.3**
         """
         # Create analysis result
-        slow_steps = [s.name for s in step_stats if s.is_slow]
+        regressed_names = [s.name for s in step_stats if s.is_regression]
         flaky_steps = [s.name for s in step_stats if s.is_flaky]
         
         result = AnalysisResult(
             mode="log",
             steps=step_stats,
-            slowest_steps=slow_steps,
+            regressed_steps=regressed_names,
             flaky_steps=flaky_steps,
             metadata={"build_count": len(step_stats)},
         )
@@ -340,21 +340,21 @@ class TestReportCompleteness:
         # Generate report
         report = generate_report(result)
         
-        # Count slow and flaky issues
-        slow_issues = [issue for issue in report.issues if issue["type"] == "slow"]
+        # Count regression and flaky issues
+        regression_issues = [issue for issue in report.issues if issue["type"] == "regression"]
         flaky_issues = [issue for issue in report.issues if issue["type"] == "flaky"]
         
         # Verify counts match
-        assert len(slow_issues) == len(slow_steps), \
-            f"Expected {len(slow_steps)} slow issues, got {len(slow_issues)}"
+        assert len(regression_issues) == len(regressed_names), \
+            f"Expected {len(regressed_names)} regression issues, got {len(regression_issues)}"
         
         assert len(flaky_issues) == len(flaky_steps), \
             f"Expected {len(flaky_steps)} flaky issues, got {len(flaky_issues)}"
         
-        # Verify all slow steps are in issues
-        slow_issue_steps = {issue["step"] for issue in slow_issues}
-        assert slow_issue_steps == set(slow_steps), \
-            f"Slow issue steps {slow_issue_steps} don't match expected {set(slow_steps)}"
+        # Verify all regressed steps are in issues
+        regression_issue_steps = {issue["step"] for issue in regression_issues}
+        assert regression_issue_steps == set(regressed_names), \
+            f"Regression issue steps {regression_issue_steps} don't match expected {set(regressed_names)}"
         
         # Verify all flaky steps are in issues
         flaky_issue_steps = {issue["step"] for issue in flaky_issues}
@@ -382,7 +382,7 @@ class TestReporterUnitTests:
                 p90=12.0,
                 p95=12.0,
                 p99=12.0,
-                is_slow=False,
+                is_regression=False,
                 is_flaky=False,
                 failure_rate=0.0,
             )
@@ -434,7 +434,7 @@ class TestReporterUnitTests:
                 "p90": 15.0,
                 "p95": 16.0,
                 "p99": 17.0,
-                "is_slow": False,
+                "is_regression": False,
                 "is_flaky": False,
             }],
             issues=[],
@@ -459,11 +459,18 @@ class TestReporterUnitTests:
             steps=[],
             issues=[
                 {
-                    "type": "slow",
-                    "step": "slow-step",
+                    "type": "regression",
+                    "step": "regressed-step",
                     "severity": "warning",
-                    "p90": 100.0,
-                    "max_duration": 200.0,
+                    "baseline_median": 100.0,
+                    "current_median": 200.0,
+                    "increase_seconds": 100.0,
+                    "increase_pct": 1.0,
+                    "started_at": {
+                        "build_id": "42",
+                        "head_sha": "abc1234",
+                        "timestamp": "2026-09-14T10:00:00",
+                    },
                 },
                 {
                     "type": "flaky",
@@ -480,7 +487,9 @@ class TestReporterUnitTests:
         
         # Verify issues are displayed
         assert "ISSUES" in text
-        assert "slow-step" in text
+        assert "regressed-step" in text
+        assert "+100%" in text  # Regression size
+        assert "Started at commit abc1234" in text
         assert "flaky-step" in text
         assert "25.0%" in text  # Failure rate
 
@@ -519,7 +528,7 @@ class TestReporterUnitTests:
                 p90=10.0,
                 p95=10.0,
                 p99=10.0,
-                is_slow=False,
+                is_regression=False,
                 is_flaky=True,
                 failure_rate=0.25,
             )

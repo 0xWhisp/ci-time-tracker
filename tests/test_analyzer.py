@@ -2,7 +2,6 @@
 
 Tests cover:
 - Percentile computation accuracy (Property 3)
-- Slow step detection threshold (Property 4)
 - Flaky step detection bounds (Property 5)
 - Estimate association correctness (Property 2)
 - Requirements: 1.5, 2.2, 2.3, 3.1, 3.2
@@ -13,7 +12,6 @@ from hypothesis import given, settings, strategies as st, assume
 
 from ci_time_tracker.analyzer import (
     compute_percentiles, 
-    detect_slow_steps, 
     analyze_config
 )
 from ci_time_tracker.models import (
@@ -166,247 +164,13 @@ class TestPercentileComputation:
         assert result["p99"] == 10.0
 
 
-# Hypothesis strategies for slow step detection tests
+# Hypothesis strategies for step detection tests
 
 # Generate valid step names (non-empty strings)
 step_names = st.text(
     alphabet=st.characters(whitelist_categories=('L', 'N', 'Pd', 'Pc')),
     min_size=1, max_size=50
 ).filter(lambda s: s.strip())
-
-
-class TestSlowStepDetection:
-    """Property tests for slow step detection.
-    
-    **Feature: ci-time-tracker, Property 4: Slow step detection threshold**
-    """
-
-    @given(
-        name=step_names,
-        base_durations=st.lists(
-            st.floats(min_value=0.1, max_value=1000.0, allow_nan=False, allow_infinity=False),
-            min_size=1,
-            max_size=50
-        ),
-        excess_factor=st.floats(min_value=1.51, max_value=5.0, allow_nan=False, allow_infinity=False)
-    )
-    @settings(max_examples=100)
-    def test_step_with_duration_exceeding_p90_by_more_than_50_percent_is_flagged_slow(
-        self, name: str, base_durations: list[float], excess_factor: float
-    ) -> None:
-        """
-        **Feature: ci-time-tracker, Property 4: Slow step detection threshold**
-        
-        *For any* step statistics where at least one duration exceeds p90 by more 
-        than 50%, the step SHALL be flagged as slow.
-        
-        **Validates: Requirements 2.3**
-        """
-        # Compute p90 from base durations
-        percentiles = compute_percentiles(base_durations)
-        p90 = percentiles["p90"]
-        assume(p90 is not None and p90 > 0)
-        
-        # Create a duration that exceeds p90 by more than 50%
-        # excess_factor > 1.5 ensures we exceed the threshold
-        slow_duration = p90 * excess_factor
-        
-        # Add the slow duration to the list
-        all_durations = base_durations + [slow_duration]
-        
-        # Recompute percentiles with the new duration included
-        final_percentiles = compute_percentiles(all_durations)
-        
-        # Create step statistics
-        stats = StepStatistics(
-            name=name,
-            execution_count=len(all_durations),
-            success_count=len(all_durations),
-            failure_count=0,
-            durations=all_durations,
-            p50=final_percentiles["p50"],
-            p90=final_percentiles["p90"],
-            p95=final_percentiles["p95"],
-            p99=final_percentiles["p99"],
-            is_slow=False,
-            is_flaky=False,
-            failure_rate=0.0,
-        )
-        
-        # Detect slow steps
-        slow_steps = detect_slow_steps([stats])
-        
-        # The step should be flagged as slow because slow_duration > p90 * 1.5
-        # Note: We need to check against the FINAL p90, not the original
-        # The slow_duration was designed to exceed the original p90 by > 50%
-        # But after adding it, the p90 might change
-        # The property should hold: if ANY duration > final_p90 * 1.5, flag as slow
-        threshold = stats.p90 * 1.5 if stats.p90 else 0
-        has_slow_duration = any(d > threshold for d in all_durations)
-        
-        if has_slow_duration:
-            assert name in slow_steps, \
-                f"Step '{name}' should be flagged as slow: has duration exceeding p90 ({stats.p90}) by >50%"
-
-    @given(
-        name=step_names,
-        base_durations=st.lists(
-            st.floats(min_value=0.1, max_value=1000.0, allow_nan=False, allow_infinity=False),
-            min_size=1,
-            max_size=50
-        )
-    )
-    @settings(max_examples=100)
-    def test_step_with_no_duration_exceeding_p90_by_more_than_50_percent_is_not_flagged(
-        self, name: str, base_durations: list[float]
-    ) -> None:
-        """
-        **Feature: ci-time-tracker, Property 4: Slow step detection threshold**
-        
-        *For any* step statistics where NO duration exceeds p90 by more than 50%, 
-        the step SHALL NOT be flagged as slow.
-        
-        **Validates: Requirements 2.3**
-        """
-        # Compute percentiles
-        percentiles = compute_percentiles(base_durations)
-        p90 = percentiles["p90"]
-        assume(p90 is not None)
-        
-        # Calculate threshold
-        threshold = p90 * 1.5
-        
-        # Filter out any durations that would exceed the threshold
-        # This ensures no duration exceeds p90 by more than 50%
-        safe_durations = [d for d in base_durations if d <= threshold]
-        assume(len(safe_durations) > 0)  # Need at least one duration
-        
-        # Recompute percentiles with safe durations
-        final_percentiles = compute_percentiles(safe_durations)
-        
-        # Create step statistics
-        stats = StepStatistics(
-            name=name,
-            execution_count=len(safe_durations),
-            success_count=len(safe_durations),
-            failure_count=0,
-            durations=safe_durations,
-            p50=final_percentiles["p50"],
-            p90=final_percentiles["p90"],
-            p95=final_percentiles["p95"],
-            p99=final_percentiles["p99"],
-            is_slow=False,
-            is_flaky=False,
-            failure_rate=0.0,
-        )
-        
-        # Verify no duration exceeds the final p90 by more than 50%
-        final_threshold = stats.p90 * 1.5 if stats.p90 else float('inf')
-        assume(all(d <= final_threshold for d in safe_durations))
-        
-        # Detect slow steps
-        slow_steps = detect_slow_steps([stats])
-        
-        # The step should NOT be flagged as slow
-        assert name not in slow_steps, \
-            f"Step '{name}' should NOT be flagged as slow: no duration exceeds p90 ({stats.p90}) by >50%"
-
-    @given(
-        name=step_names,
-        p90_value=st.floats(min_value=10.0, max_value=1000.0, allow_nan=False, allow_infinity=False),
-        multiplier=st.floats(min_value=0.5, max_value=1.5, allow_nan=False, allow_infinity=False)
-    )
-    @settings(max_examples=100)
-    def test_boundary_at_exactly_50_percent_over_p90_is_not_slow(
-        self, name: str, p90_value: float, multiplier: float
-    ) -> None:
-        """
-        **Feature: ci-time-tracker, Property 4: Slow step detection threshold**
-        
-        *For any* step where the maximum duration is exactly at or below p90 * 1.5,
-        the step SHALL NOT be flagged as slow (threshold is strictly greater than).
-        
-        **Validates: Requirements 2.3**
-        """
-        # Create durations where max is at or below p90 * 1.5
-        # We'll create a controlled set where we know the p90
-        threshold = p90_value * 1.5
-        max_duration = p90_value * multiplier  # multiplier <= 1.5 means at or below threshold
-        
-        # Create a list of durations where p90 is approximately p90_value
-        # and max duration is at or below threshold
-        durations = [p90_value * 0.5, p90_value * 0.7, p90_value * 0.9, p90_value, max_duration]
-        durations = [d for d in durations if d > 0]  # Ensure positive
-        
-        percentiles = compute_percentiles(durations)
-        
-        stats = StepStatistics(
-            name=name,
-            execution_count=len(durations),
-            success_count=len(durations),
-            failure_count=0,
-            durations=durations,
-            p50=percentiles["p50"],
-            p90=percentiles["p90"],
-            p95=percentiles["p95"],
-            p99=percentiles["p99"],
-            is_slow=False,
-            is_flaky=False,
-            failure_rate=0.0,
-        )
-        
-        # Check if any duration actually exceeds the computed p90 by more than 50%
-        actual_threshold = stats.p90 * 1.5 if stats.p90 else float('inf')
-        should_be_slow = any(d > actual_threshold for d in durations)
-        
-        slow_steps = detect_slow_steps([stats])
-        
-        if should_be_slow:
-            assert name in slow_steps, \
-                f"Step should be flagged slow: duration exceeds p90 ({stats.p90}) * 1.5 = {actual_threshold}"
-        else:
-            assert name not in slow_steps, \
-                f"Step should NOT be flagged slow: no duration exceeds p90 ({stats.p90}) * 1.5 = {actual_threshold}"
-
-    def test_step_with_no_durations_is_not_flagged_slow(self) -> None:
-        """Steps with no duration data should not be flagged as slow."""
-        stats = StepStatistics(
-            name="empty-step",
-            execution_count=0,
-            success_count=0,
-            failure_count=0,
-            durations=[],
-            p50=None,
-            p90=None,
-            p95=None,
-            p99=None,
-            is_slow=False,
-            is_flaky=False,
-            failure_rate=0.0,
-        )
-        
-        slow_steps = detect_slow_steps([stats])
-        assert "empty-step" not in slow_steps
-
-    def test_step_with_none_p90_is_not_flagged_slow(self) -> None:
-        """Steps with None p90 should not be flagged as slow."""
-        stats = StepStatistics(
-            name="no-p90-step",
-            execution_count=1,
-            success_count=1,
-            failure_count=0,
-            durations=[100.0],
-            p50=100.0,
-            p90=None,  # Explicitly None
-            p95=None,
-            p99=None,
-            is_slow=False,
-            is_flaky=False,
-            failure_rate=0.0,
-        )
-        
-        slow_steps = detect_slow_steps([stats])
-        assert "no-p90-step" not in slow_steps
 
 
 class TestFlakyStepDetection:
@@ -454,7 +218,7 @@ class TestFlakyStepDetection:
             p90=10.0,
             p95=10.0,
             p99=10.0,
-            is_slow=False,
+            is_regression=False,
             is_flaky=False,
             failure_rate=actual_failure_rate,
         )
@@ -506,7 +270,7 @@ class TestFlakyStepDetection:
             p90=10.0,
             p95=10.0,
             p99=10.0,
-            is_slow=False,
+            is_regression=False,
             is_flaky=False,
             failure_rate=actual_failure_rate,
         )
@@ -552,7 +316,7 @@ class TestFlakyStepDetection:
             p90=10.0,
             p95=10.0,
             p99=10.0,
-            is_slow=False,
+            is_regression=False,
             is_flaky=False,
             failure_rate=actual_failure_rate,
         )
@@ -599,7 +363,7 @@ class TestFlakyStepDetection:
             p90=10.0,
             p95=10.0,
             p99=10.0,
-            is_slow=False,
+            is_regression=False,
             is_flaky=False,
             failure_rate=actual_failure_rate,
         )
@@ -630,7 +394,7 @@ class TestFlakyStepDetection:
             p90=None,
             p95=None,
             p99=None,
-            is_slow=False,
+            is_regression=False,
             is_flaky=False,
             failure_rate=0.0,
         )
@@ -652,7 +416,7 @@ class TestFlakyStepDetection:
             p90=10.0,
             p95=10.0,
             p99=10.0,
-            is_slow=False,
+            is_regression=False,
             is_flaky=False,
             failure_rate=0.0,
         )
@@ -674,7 +438,7 @@ class TestFlakyStepDetection:
             p90=10.0,
             p95=10.0,
             p99=10.0,
-            is_slow=False,
+            is_regression=False,
             is_flaky=False,
             failure_rate=1.0,
         )

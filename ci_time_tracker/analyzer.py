@@ -1,12 +1,13 @@
 """Analyzer module for ci-time-tracker.
 
 This module provides functionality to analyze CI/CD pipeline configurations
-and build logs, computing statistics, detecting slow steps, and identifying
+and build logs, computing statistics, detecting duration regressions, and identifying
 flaky steps.
 """
 
 import re
-from collections import Counter
+from collections import Counter, defaultdict
+from statistics import median
 from typing import Any
 
 from ci_time_tracker.models import (
@@ -15,6 +16,12 @@ from ci_time_tracker.models import (
     PipelineConfig,
     PipelineStep,
     StepStatistics,
+)
+from ci_time_tracker.detection import (
+    DEFAULT_MIN_SAMPLES,
+    DEFAULT_REGRESSION_THRESHOLD,
+    detect_flaky_by_commit,
+    detect_regression,
 )
 from ci_time_tracker.pricing import PricingTable, attributed_cost, job_cost
 
@@ -110,7 +117,7 @@ def analyze_config(
         mode="config",
         steps=steps_with_estimates,
         total_estimated_duration=total_estimated if has_estimates else None,
-        slowest_steps=[],
+        regressed_steps=[],
         flaky_steps=[],
         metadata={
             "provider": config.provider,
@@ -143,47 +150,78 @@ def normalize_matrix_name(name: str) -> str:
     return f"{_MATRIX_PARAMS_PATTERN.sub('', job).strip()}{separator}{step}"
 
 
+def _chronological(logs: list[BuildLog]) -> list[BuildLog]:
+    """Order builds oldest first when every build has a comparable timestamp.
+
+    Otherwise the given order is kept: log files and API results already come
+    in a meaningful order, and aware and naive timestamps cannot be compared.
+    """
+    timestamps = [log.timestamp for log in logs]
+
+    if any(timestamp is None for timestamp in timestamps):
+        return list(logs)
+    if len({timestamp.tzinfo is None for timestamp in timestamps}) > 1:
+        return list(logs)
+
+    return sorted(logs, key=lambda log: log.timestamp)
+
+
 def analyze_logs(
     logs: list[BuildLog],
     pricing: PricingTable | None = None,
     group_matrix: bool = False,
+    regression_threshold: float = DEFAULT_REGRESSION_THRESHOLD,
+    min_samples: int = DEFAULT_MIN_SAMPLES,
 ) -> AnalysisResult:
     """Analyze multiple build logs and compute statistics.
-    
-    Aggregates step execution data across multiple build logs to compute
-    duration percentiles and consumed time, detect slow steps, identify flaky
-    steps, and estimate cost where the runner's rate is known.
-    
+
+    Aggregates step execution data across builds to compute duration
+    percentiles and consumed time, detect duration regressions, identify
+    flaky steps, and estimate cost where the runner's rate is known.
+
+    Flaky detection uses same-commit evidence whenever builds carry a commit
+    SHA and falls back to the failure-rate heuristic otherwise; the method
+    used is recorded in the metadata.
+
     Args:
         logs: List of parsed build logs
         pricing: Optional runner pricing table; defaults to the built-in rates
         group_matrix: Aggregate the legs of a matrix job into one step
-        
+        regression_threshold: Minimum relative duration increase to report,
+            e.g. 0.25 for +25%
+        min_samples: Minimum builds on each side of a regression
+
     Returns:
         AnalysisResult in log mode with step statistics and detected issues
     """
     pricing = pricing or PricingTable()
-    
+
     if not logs:
         return AnalysisResult(
             mode="log",
             steps=[],
             total_estimated_duration=None,
-            slowest_steps=[],
+            regressed_steps=[],
             flaky_steps=[],
             metadata={"build_count": 0},
         )
-    
+
+    logs = _chronological(logs)
+
+    def reported_name(name: str) -> str:
+        return normalize_matrix_name(name) if group_matrix else name
+
     # Aggregate step data by name
     step_data: dict[str, dict] = {}
-    
-    for log in logs:
+
+    for build_index, log in enumerate(logs):
         for step in log.steps:
-            name = normalize_matrix_name(step.name) if group_matrix else step.name
-            
+            name = reported_name(step.name)
+
             if name not in step_data:
                 step_data[name] = {
                     "durations": [],
+                    "build_durations": defaultdict(list),
                     "success_count": 0,
                     "failure_count": 0,
                     "execution_count": 0,
@@ -192,43 +230,44 @@ def analyze_logs(
                     "cost": 0.0,
                     "priced_executions": 0,
                 }
-            
+
             data = step_data[name]
             data["execution_count"] += 1
-            
+
             if step.duration_seconds is not None:
                 data["durations"].append(step.duration_seconds)
-            
+                data["build_durations"][build_index].append(step.duration_seconds)
+
             if step.status == "success":
                 data["success_count"] += 1
             elif step.status == "failure":
                 data["failure_count"] += 1
-            
+
             if step.is_retry:
                 data["retry_count"] += 1
-            
+
             if step.runner:
                 data["runners"][step.runner] += 1
-            
+
             cost = attributed_cost(step.duration_seconds, pricing.price_for(step.runner))
             if cost is not None:
                 data["cost"] += cost
                 data["priced_executions"] += 1
-    
+
     # Build step statistics
     step_stats: list[StepStatistics] = []
-    
+
     for name, data in step_data.items():
         percentiles = compute_percentiles(data["durations"])
-        
+
         execution_count = data["execution_count"]
         failure_count = data["failure_count"]
         failure_rate = failure_count / execution_count if execution_count > 0 else 0.0
-        
+
         durations = data["durations"]
         total_duration = sum(durations)
         most_common_runner = data["runners"].most_common(1)
-        
+
         stats = StepStatistics(
             name=name,
             execution_count=execution_count,
@@ -239,8 +278,6 @@ def analyze_logs(
             p90=percentiles["p90"],
             p95=percentiles["p95"],
             p99=percentiles["p99"],
-            is_slow=False,  # Will be set by detect_slow_steps
-            is_flaky=False,  # Will be set by detect_flaky_steps
             failure_rate=failure_rate,
             total_duration=total_duration,
             mean_duration=total_duration / len(durations) if durations else None,
@@ -248,16 +285,37 @@ def analyze_logs(
             estimated_cost_usd=data["cost"] if data["priced_executions"] else None,
         )
         step_stats.append(stats)
-    
-    # Detect slow and flaky steps
-    slow_steps = detect_slow_steps(step_stats)
-    flaky_steps = detect_flaky_steps(step_stats)
-    
-    # Update flags on step statistics
+
+    # Flaky steps: same-commit evidence when builds carry a commit, otherwise
+    # the failure-rate heuristic, which cannot tell flakiness from breakage
+    if any(log.head_sha for log in logs):
+        flaky_method = "same-commit"
+        flaky_evidence = detect_flaky_by_commit(logs, reported_name)
+    else:
+        flaky_method = "failure-rate"
+        flaky_evidence = {
+            name: {"method": "failure-rate"} for name in detect_flaky_steps(step_stats)
+        }
+
+    # Regressions, from one sample per build (the median across matrix legs
+    # when they are grouped), in chronological order
+    regression_checked = 0
+
     for stats in step_stats:
-        stats.is_slow = stats.name in slow_steps
-        stats.is_flaky = stats.name in flaky_steps
-    
+        build_durations = step_data[stats.name]["build_durations"]
+        samples = [
+            (median(values), logs[build_index])
+            for build_index, values in sorted(build_durations.items())
+        ]
+
+        if len(samples) >= 2 * min_samples:
+            regression_checked += 1
+
+        stats.regression = detect_regression(samples, regression_threshold, min_samples)
+        stats.is_regression = stats.regression is not None
+        stats.flaky_evidence = flaky_evidence.get(stats.name)
+        stats.is_flaky = stats.flaky_evidence is not None
+
     metadata: dict[str, Any] = {
         "build_count": len(logs),
         "step_count": len(step_stats),
@@ -265,14 +323,22 @@ def analyze_logs(
     }
     if group_matrix:
         metadata["grouping"] = "matrix legs merged"
+
+    superseded = sum(1 for log in logs if log.metadata.get("superseded_attempt"))
+    if superseded:
+        metadata["superseded_attempts"] = superseded
+
+    metadata["flaky_detection"] = flaky_method
+    metadata["regression_checked_steps"] = regression_checked
+    metadata["regression_min_builds"] = 2 * min_samples
     metadata.update(aggregate_job_metrics(logs, pricing))
-    
+
     return AnalysisResult(
         mode="log",
         steps=step_stats,
         total_estimated_duration=None,
-        slowest_steps=slow_steps,
-        flaky_steps=flaky_steps,
+        regressed_steps=[stats.name for stats in step_stats if stats.is_regression],
+        flaky_steps=[stats.name for stats in step_stats if stats.is_flaky],
         metadata=metadata,
     )
 
@@ -341,35 +407,6 @@ def aggregate_job_metrics(
         metrics["unpriced_runners"] = sorted(unpriced_runners)
     
     return metrics
-
-
-def detect_slow_steps(stats: list[StepStatistics]) -> list[str]:
-    """Identify steps exceeding p90 by more than 50%.
-    
-    A step is flagged as slow if any of its recorded durations exceeds
-    the p90 percentile by more than 50%.
-    
-    Args:
-        stats: List of step statistics with computed percentiles
-        
-    Returns:
-        List of step names that are flagged as slow
-    """
-    slow_steps: list[str] = []
-    
-    for step in stats:
-        if step.p90 is None or not step.durations:
-            continue
-        
-        threshold = step.p90 * 1.5  # p90 + 50%
-        
-        # Check if any duration exceeds the threshold
-        for duration in step.durations:
-            if duration > threshold:
-                slow_steps.append(step.name)
-                break
-    
-    return slow_steps
 
 
 def detect_flaky_steps(stats: list[StepStatistics]) -> list[str]:

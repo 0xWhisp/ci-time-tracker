@@ -6,8 +6,12 @@ A minimal CLI tool for analyzing CI/CD pipeline configurations and build logs to
 
 - **Config Analysis**: Parse GitHub Actions, GitLab CI, and CircleCI configurations to extract pipeline structure
 - **Log Analysis**: Parse build logs to compute actual step durations and statistics
-- **Flaky Detection**: Identify steps with intermittent failures (5-95% failure rate)
-- **Slow Step Detection**: Flag steps exceeding p90 duration by more than 50%
+- **Flaky Detection**: Flag steps that both failed and passed on the same commit,
+  including runs that only passed on a re-run
+- **Regression Detection**: Flag steps whose duration jumped and stayed up, and
+  name the commit where it started
+- **Cost and Time**: Rank steps by the time they consume, estimate cost per runner,
+  and separate queue time from execution time
 - **Multiple Output Formats**: Human-readable text or JSON for dashboard integration
 
 ## Installation
@@ -143,6 +147,9 @@ SUMMARY
   estimated_cost_usd: $2.81
   priced_jobs: 35
   pricing_source: built-in defaults
+  flaky_detection: same-commit
+  regression_checked_steps: 12
+  regression_min_builds: 10
   note: cost uses private-repository rates and GitHub's per-job rounding; public repos pay nothing for standard runners
 
 TOP TIME CONSUMERS
@@ -153,15 +160,20 @@ TOP TIME CONSUMERS
 
 ISSUES
 --------------------------------------------------------------------------------------------------------------
-  [WARNING] SLOW: build / Install dependencies
-    P90: 28.00s, Max: 115.00s
+  [WARNING] REGRESSION: build / Install dependencies
+    Median 10.0s -> 28.0s (+180%, +18.0s)
+    Started at commit 3f9c2ab (build 9876543210, 2026-09-14)
+  [ERROR] FLAKY: integration / Run e2e tests
+    Failed and passed on the same commit in 2 of 17 commits
+    Passed on re-run after failing in 2 run(s)
+    e.g. 1a2b3c4, 9f8e7d6
 
 STEPS
 --------------------------------------------------------------------------------------------------------------
 Step Name                               Runs     Total      P50      P90      P95      P99     Cost Flags
 --------------------------------------------------------------------------------------------------------------
 build / Run tests                         23   45m 18s  112.00s  178.00s  178.00s  179.00s    $1.53
-build / Install dependencies              23    7m 08s   10.00s   28.00s   31.00s  115.00s    $0.30 SLOW
+build / Install dependencies              23    7m 08s   10.00s   28.00s   31.00s  115.00s    $0.30 REGR
 build / Set up Python                     23    1m 43s    2.00s    9.00s   44.00s   49.00s    $0.08
 ... and 63 more steps (use --top 0 to show all)
 
@@ -169,7 +181,9 @@ build / Set up Python                     23    1m 43s    2.00s    9.00s   44.00
 ```
 
 Steps are ordered by the time they consume, because that is what a CI bill is
-made of. `--top N` limits the table (default 25, `0` shows everything).
+made of. `--top N` limits the table (default 25, `0` shows everything). (The
+issues in this example are illustrative; the rest is real output for
+psf/requests.)
 
 ### JSON Output
 
@@ -204,19 +218,30 @@ made of. `--top N` limits the table (default 25, `0` shows everything).
       "p90": 178.0,
       "p95": 178.0,
       "p99": 179.0,
-      "is_slow": false,
+      "is_regression": false,
       "is_flaky": false,
       "runner": "ubuntu-22.04",
-      "estimated_cost_usd": 1.5312
+      "estimated_cost_usd": 1.5312,
+      "regression": null,
+      "flaky_evidence": null
     }
   ],
   "issues": [
     {
-      "type": "slow",
+      "type": "regression",
       "step": "build / Install dependencies",
       "severity": "warning",
-      "p90": 28.0,
-      "max_duration": 115.0
+      "baseline_median": 10.0,
+      "current_median": 28.0,
+      "increase_seconds": 18.0,
+      "increase_pct": 1.8,
+      "baseline_builds": 14,
+      "current_builds": 9,
+      "started_at": {
+        "build_id": "9876543210",
+        "head_sha": "3f9c2ab",
+        "timestamp": "2026-09-14T10:02:11+00:00"
+      }
     }
   ]
 }
@@ -267,21 +292,37 @@ whatever machines its legs ran on.
 
 ## Detection Criteria
 
-### Slow Steps
-
-A step is flagged as **slow** when:
-- Any recorded duration exceeds the p90 (90th percentile) by more than 50%
-- Formula: `duration > p90 * 1.5`
-
-This identifies steps with occasional performance outliers that significantly impact build times.
-
 ### Flaky Steps
 
-A step is flagged as **flaky** when:
-- Failure rate is strictly between 5% and 95%
-- Formula: `0.05 < failure_rate < 0.95`
+A step is **flaky** when it both failed and passed **on the same commit**: the
+code did not change, the outcome did. A failed run that passed when re-run is
+the clearest case, so the earlier attempts of re-run workflows are fetched too.
 
-This identifies steps with intermittent failures (not consistently passing or failing), which often indicate race conditions, timing issues, or environmental dependencies.
+- Outcomes are compared per workflow, step and commit, using each matrix leg's
+  own name: a leg that always fails on Windows is broken there, not flaky.
+- A high failure rate alone is **not** evidence. A step that fails because a
+  commit broke it, and passes once the fix lands, is doing its job.
+
+Logs without commit information (log files) fall back to the failure-rate
+heuristic (`0.05 < failure_rate < 0.95`), which cannot tell flakiness from real
+breakage. The report states which method was used (`flaky_detection`).
+
+### Regressions
+
+A step has **regressed** when its duration jumped and stayed up:
+
+1. Its history (one sample per build, oldest first) is split at the point that
+   best separates two stable segments.
+2. The later segment's median must be at least **25%** higher
+   (`--regression-threshold`) and at least **10 seconds** higher, so `1s -> 2s`
+   steps are not reported.
+3. The most recent 5 builds must still be that slow, so a spike that already
+   recovered is not reported.
+
+The report names the commit and build where the regression started. A step
+needs at least **10 builds** to be judged; `regression_checked_steps` says how
+many had enough history. With `--group-matrix`, the legs of a build are
+combined into one sample (their median).
 
 ## Supported CI Providers
 
@@ -294,7 +335,8 @@ This identifies steps with intermittent failures (not consistently passing or fa
 ## Limitations
 
 - Log parsing relies on timestamp patterns; non-standard formats may not parse correctly
-- Flaky detection requires multiple build logs for meaningful analysis
+- Flaky detection needs the same commit to have been built more than once
+- Regression detection needs at least 10 builds of a step
 - Estimated durations in config mode require user-provided estimates file
 
 ## Development

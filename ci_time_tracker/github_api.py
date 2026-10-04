@@ -202,8 +202,12 @@ class GitHubClient:
             page += 1
 
     def fetch_run_jobs(self, run_id: int | str, run_attempt: int | None = None) -> list[dict[str, Any]]:
-        """Return every job of a workflow run, following pagination."""
-        if run_attempt and run_attempt > 1:
+        """Return every job of a workflow run attempt, following pagination.
+
+        Without an attempt, GitHub returns the jobs of the latest attempt, so
+        an earlier attempt of a re-run must always be asked for explicitly.
+        """
+        if run_attempt:
             path = f"/repos/{self.repo}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
         else:
             path = f"/repos/{self.repo}/actions/runs/{run_id}/jobs"
@@ -283,15 +287,33 @@ def steps_from_job(job: dict[str, Any], run_attempt: int = 1) -> list[StepExecut
     return executions
 
 
-def build_log_from_run(run: dict[str, Any], jobs: list[dict[str, Any]]) -> BuildLog:
+def build_log_from_run(
+    run: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    superseded: bool = False,
+) -> BuildLog:
     """Map a workflow run and its jobs to a BuildLog.
 
     Job-level data that has no place on a step (queue time, runner, result)
     is kept in `metadata["jobs"]` for later analysis.
+
+    Args:
+        run: Run payload; for an earlier attempt of a re-run, the run-level
+            timestamps describe the latest attempt and must be left out
+        jobs: The jobs of that attempt
+        superseded: Whether this is an earlier attempt of a re-run
     """
     run_attempt = int(run.get("run_attempt") or 1)
-    started_at = parse_api_timestamp(run.get("run_started_at")) or parse_api_timestamp(run.get("created_at"))
-    finished_at = parse_api_timestamp(run.get("updated_at"))
+
+    job_starts = [ts for ts in (parse_api_timestamp(job.get("started_at")) for job in jobs) if ts]
+    job_ends = [ts for ts in (parse_api_timestamp(job.get("completed_at")) for job in jobs) if ts]
+
+    started_at = (
+        parse_api_timestamp(run.get("run_started_at"))
+        or (min(job_starts) if job_starts else None)
+        or parse_api_timestamp(run.get("created_at"))
+    )
+    finished_at = parse_api_timestamp(run.get("updated_at")) or (max(job_ends) if job_ends else None)
 
     steps: list[StepExecution] = []
     jobs_metadata: list[dict[str, Any]] = []
@@ -326,8 +348,26 @@ def build_log_from_run(run: dict[str, Any], jobs: list[dict[str, Any]]) -> Build
             "event": run.get("event"),
             "url": run.get("html_url"),
             "jobs": jobs_metadata,
+            "superseded_attempt": superseded,
         },
     )
+
+
+def _earlier_attempt(run: dict[str, Any], attempt: int) -> dict[str, Any]:
+    """Run payload for an earlier attempt of a re-run.
+
+    The runs listing only describes the latest attempt, so its timestamps and
+    conclusion are dropped; build_log_from_run derives them from the jobs.
+    An earlier attempt is finished by definition.
+    """
+    return {
+        **run,
+        "run_attempt": attempt,
+        "run_started_at": None,
+        "updated_at": None,
+        "conclusion": None,
+        "status": "completed",
+    }
 
 
 def fetch_build_logs(
@@ -340,6 +380,7 @@ def fetch_build_logs(
     api_url: str = DEFAULT_API_URL,
     transport: Transport = _urllib_transport,
     workers: int = DEFAULT_WORKERS,
+    include_attempts: bool = True,
 ) -> list[BuildLog]:
     """Fetch recent workflow runs and return them as BuildLogs.
 
@@ -347,6 +388,10 @@ def fetch_build_logs(
     request of their own. Those dominate the wall clock, so cached runs are
     served from `cache` (see cache.RunCache) and the rest are fetched
     concurrently.
+
+    The runs listing only shows the latest attempt of a re-run. The earlier
+    attempts are fetched too, as BuildLogs of their own: a step that failed
+    and then passed on a re-run is the strongest evidence of flakiness.
 
     Args:
         repo: Repository in "owner/name" form
@@ -358,9 +403,12 @@ def fetch_build_logs(
         api_url: API root, overridable for GitHub Enterprise
         transport: Injectable request function
         workers: Number of concurrent jobs requests
+        include_attempts: Also fetch the earlier attempts of re-run runs;
+            they do not count towards `limit`
 
     Returns:
-        BuildLogs ordered oldest first, so trends read left to right
+        BuildLogs ordered oldest first, so trends read left to right; the
+        attempts of a re-run come in attempt order
 
     Raises:
         GitHubAPIError: If the API cannot be queried
@@ -372,36 +420,48 @@ def fetch_build_logs(
         transport=transport,
     )
 
-    runs = [
-        run
-        for run in client.iter_workflow_runs(workflow=workflow, branch=branch, limit=limit)
-        if run.get("id") is not None
-    ]
+    # One entry per (run, attempt), newest first: (payload, attempt, superseded)
+    attempts: list[tuple[dict[str, Any], int, bool]] = []
+
+    for run in client.iter_workflow_runs(workflow=workflow, branch=branch, limit=limit):
+        if run.get("id") is None:
+            continue
+
+        latest = int(run.get("run_attempt") or 1)
+        attempts.append((run, latest, False))
+
+        if include_attempts:
+            for attempt in range(latest - 1, 0, -1):
+                attempts.append((_earlier_attempt(run, attempt), attempt, True))
 
     # Cache reads and writes stay on this thread: a sqlite connection belongs
     # to the thread that created it.
-    jobs_by_run: dict[int, list[dict[str, Any]]] = {}
-    missing: list[dict[str, Any]] = []
+    jobs_by_attempt: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    missing: list[tuple[dict[str, Any], int]] = []
 
-    for run in runs:
-        cached = cache.get_jobs(repo, run["id"], int(run.get("run_attempt") or 1)) if cache else None
+    for run, attempt, _ in attempts:
+        cached = cache.get_jobs(repo, run["id"], attempt) if cache else None
         if cached is None:
-            missing.append(run)
+            missing.append((run, attempt))
         else:
-            jobs_by_run[run["id"]] = cached
+            jobs_by_attempt[(run["id"], attempt)] = cached
 
     if missing:
-        def fetch(run: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-            return run, client.fetch_run_jobs(run["id"], int(run.get("run_attempt") or 1))
+        def fetch(entry: tuple[dict[str, Any], int]) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+            run, attempt = entry
+            return run, attempt, client.fetch_run_jobs(run["id"], attempt)
 
         with ThreadPoolExecutor(max_workers=max(1, min(workers, len(missing)))) as pool:
-            for run, jobs in pool.map(fetch, missing):
-                jobs_by_run[run["id"]] = jobs
+            for run, attempt, jobs in pool.map(fetch, missing):
+                jobs_by_attempt[(run["id"], attempt)] = jobs
                 # Only completed runs are worth caching: an in-flight run's
                 # timings still change.
                 if cache is not None and run.get("status") == "completed":
-                    cache.store_jobs(repo, run["id"], int(run.get("run_attempt") or 1), jobs)
+                    cache.store_jobs(repo, run["id"], attempt, jobs)
 
-    logs = [build_log_from_run(run, jobs_by_run.get(run["id"], [])) for run in runs]
+    logs = [
+        build_log_from_run(run, jobs_by_attempt.get((run["id"], attempt), []), superseded)
+        for run, attempt, superseded in attempts
+    ]
     logs.reverse()
     return logs

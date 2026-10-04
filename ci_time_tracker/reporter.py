@@ -56,10 +56,12 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
                 "p90": step.p90,
                 "p95": step.p95,
                 "p99": step.p99,
-                "is_slow": step.is_slow,
+                "is_regression": step.is_regression,
                 "is_flaky": step.is_flaky,
                 "runner": step.runner,
                 "estimated_cost_usd": step.estimated_cost_usd,
+                "regression": step.regression,
+                "flaky_evidence": step.flaky_evidence,
             }
         elif isinstance(step, PipelineStep):
             # Config mode - include step info
@@ -84,24 +86,21 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
     # Build issues list
     issues: list[dict[str, Any]] = []
     
-    for slow_step in result.slowest_steps:
+    for regressed_step in result.regressed_steps:
         # Find the corresponding step to get more details
-        step_info = next((s for s in result.steps if s.name == slow_step), None)
-        
+        step_info = next((s for s in result.steps if s.name == regressed_step), None)
+
         issue = {
-            "type": "slow",
-            "step": slow_step,
+            "type": "regression",
+            "step": regressed_step,
             "severity": "warning",
         }
-        
-        if step_info and isinstance(step_info, StepStatistics):
-            if step_info.p90 is not None:
-                issue["p90"] = step_info.p90
-            if step_info.durations:
-                issue["max_duration"] = max(step_info.durations)
-        
+
+        if step_info and isinstance(step_info, StepStatistics) and step_info.regression:
+            issue.update(step_info.regression)
+
         issues.append(issue)
-    
+
     for flaky_step in result.flaky_steps:
         # Find the corresponding step to get more details
         step_info = next((s for s in result.steps if s.name == flaky_step), None)
@@ -116,6 +115,8 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
             issue["failure_rate"] = step_info.failure_rate
             issue["failure_count"] = step_info.failure_count
             issue["execution_count"] = step_info.execution_count
+            if step_info.flaky_evidence:
+                issue.update(step_info.flaky_evidence)
         
         issues.append(issue)
     
@@ -220,6 +221,66 @@ def _format_top_consumers(steps: list[dict[str, Any]], width: int) -> list[str]:
     return lines
 
 
+def _describe_origin(started: dict[str, Any]) -> str:
+    """Describe where a regression started: commit, build and date."""
+    commit = started.get("head_sha")
+    context = [
+        f"build {started['build_id']}" if started.get("build_id") else None,
+        str(started["timestamp"])[:10] if started.get("timestamp") else None,
+    ]
+    context_str = ", ".join(part for part in context if part)
+
+    if commit:
+        return f"commit {commit} ({context_str})" if context_str else f"commit {commit}"
+    return context_str
+
+
+def _format_issue_details(issue: dict[str, Any]) -> list[str]:
+    """Indented detail lines explaining why an issue was raised."""
+    details: list[str] = []
+
+    if issue["type"] == "regression":
+        if "baseline_median" in issue and "current_median" in issue:
+            pct = issue.get("increase_pct")
+            pct_str = f"+{pct * 100:.0f}%, " if pct is not None else ""
+            details.append(
+                f"    Median {format_duration(issue['baseline_median'])} -> "
+                f"{format_duration(issue['current_median'])} "
+                f"({pct_str}+{format_duration(issue.get('increase_seconds'))})"
+            )
+
+        origin = _describe_origin(issue.get("started_at") or {})
+        if origin:
+            details.append(f"    Started at {origin}")
+
+    elif issue["type"] == "flaky":
+        if issue.get("method") == "same-commit":
+            details.append(
+                f"    Failed and passed on the same commit in {issue.get('flaky_commits', 0)} "
+                f"of {issue.get('observed_commits', 0)} commits"
+            )
+            if issue.get("rerun_recoveries"):
+                details.append(f"    Passed on re-run after failing in {issue['rerun_recoveries']} run(s)")
+            if issue.get("example_commits"):
+                details.append(f"    e.g. {', '.join(issue['example_commits'])}")
+
+        elif "failure_rate" in issue:
+            failure_rate = issue["failure_rate"] * 100
+            failure_count = issue.get("failure_count", 0)
+            execution_count = issue.get("execution_count", 0)
+            details.append(
+                f"    Failure rate: {failure_rate:.1f}% "
+                f"({failure_count}/{execution_count} executions)"
+            )
+            if issue.get("method") == "failure-rate":
+                details.append(
+                    "    Based on failure rate only (no commit data), which cannot "
+                    "tell flakiness from real breakage"
+                )
+
+    return details
+
+
 def format_text(report: Report, top: int | None = None) -> str:
     """Format a Report as human-readable text.
     
@@ -273,20 +334,9 @@ def format_text(report: Report, top: int | None = None) -> str:
             
             lines.append(f"  [{severity}] {issue_type}: {step}")
             
-            if issue["type"] == "slow":
-                if "p90" in issue and "max_duration" in issue:
-                    lines.append(f"    P90: {issue['p90']:.2f}s, Max: {issue['max_duration']:.2f}s")
-            elif issue["type"] == "flaky":
-                if "failure_rate" in issue:
-                    failure_rate = issue["failure_rate"] * 100
-                    failure_count = issue.get("failure_count", 0)
-                    execution_count = issue.get("execution_count", 0)
-                    lines.append(
-                        f"    Failure rate: {failure_rate:.1f}% "
-                        f"({failure_count}/{execution_count} executions)"
-                    )
+            lines.extend(_format_issue_details(issue))
         lines.append("")
-    
+
     # Steps
     lines.append("STEPS")
     lines.append("-" * width)
@@ -314,8 +364,8 @@ def format_text(report: Report, top: int | None = None) -> str:
             cost_str = format_cost(cost) if cost is not None else "N/A"
             
             flags = []
-            if step.get("is_slow"):
-                flags.append("SLOW")
+            if step.get("is_regression"):
+                flags.append("REGR")
             if step.get("is_flaky"):
                 flags.append("FLAKY")
             flags_str = ",".join(flags) if flags else ""

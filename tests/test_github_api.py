@@ -271,16 +271,56 @@ class TestClientRequests:
 
         assert fetch_build_logs("acme/web", limit=50, transport=transport) == []
 
-    def test_rerun_fetches_the_attempt_specific_jobs(self):
-        """Jobs of a re-run come from the attempts endpoint."""
+    def test_rerun_fetches_every_attempt(self):
+        """Each attempt of a re-run is fetched from its own endpoint."""
+        transport = FakeTransport([
+            ("/actions/runs?", {"workflow_runs": [{**RUN, "run_attempt": 3}]}),
+            ("/attempts/", JOBS),
+        ])
+
+        logs = fetch_build_logs("acme/web", limit=1, transport=transport)
+
+        for attempt in (1, 2, 3):
+            assert transport.calls_matching(f"/attempts/{attempt}/jobs")
+        # Oldest first, so attempts come in order
+        assert [log.run_attempt for log in logs] == [1, 2, 3]
+        assert [log.metadata["superseded_attempt"] for log in logs] == [True, True, False]
+        assert all(log.head_sha == RUN["head_sha"] for log in logs)
+
+    def test_earlier_attempts_do_not_count_towards_the_limit(self):
+        runs = [{**RUN, "id": 1, "run_attempt": 2}, {**RUN, "id": 2}]
+        transport = FakeTransport([
+            ("/actions/runs?", {"workflow_runs": runs}),
+            ("/jobs", JOBS),
+        ])
+
+        logs = fetch_build_logs("acme/web", limit=2, transport=transport)
+
+        # Two runs, one of them re-run once
+        assert len(logs) == 3
+
+    def test_attempts_can_be_skipped(self):
         transport = FakeTransport([
             ("/actions/runs?", {"workflow_runs": [{**RUN, "run_attempt": 3}]}),
             ("/attempts/3/jobs", JOBS),
         ])
 
-        fetch_build_logs("acme/web", limit=1, transport=transport)
+        logs = fetch_build_logs("acme/web", limit=1, transport=transport, include_attempts=False)
 
-        assert transport.calls_matching("/attempts/3/jobs")
+        assert len(logs) == 1
+        assert not transport.calls_matching("/attempts/1/")
+
+    def test_earlier_attempt_takes_its_timing_from_its_jobs(self):
+        """The runs listing only times the latest attempt."""
+        log = build_log_from_run(
+            {**RUN, "run_attempt": 1, "run_started_at": None, "updated_at": None},
+            JOBS["jobs"],
+            superseded=True,
+        )
+
+        assert log.timestamp.isoformat() == "2026-09-01T10:00:12+00:00"  # first job start
+        assert log.total_duration == 258.0  # until the last job ends, 10:04:30
+        assert log.metadata["superseded_attempt"] is True
 
     def test_logs_are_returned_oldest_first(self):
         """The API returns newest first; trends read better oldest first."""

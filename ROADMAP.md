@@ -9,7 +9,7 @@ Esfuerzo: **S** ≤ 1 día · **M** 2–3 días · **L** 4–6 días
 | 1 | Arreglar bugs críticos de parsing y empaquetado | S | Alto | ★★★★★ | — | ✅ Hecha (`6dd8d99`) |
 | 2 | Ingesta directa desde la API de GitHub Actions + caché local | L | Muy alto | ★★★★★ | 1 | ✅ Hecha |
 | 3 | Métricas accionables: tiempo total, costo estimado, tiempo en cola | S | Alto | ★★★★☆ | 2 | ✅ Hecha |
-| 4 | Flaky real (mismo commit / reintentos) y detección de regresiones | M | Alto | ★★★★☆ | 2 | ⬜ Pendiente |
+| 4 | Flaky real (mismo commit / reintentos) y detección de regresiones | M | Alto | ★★★★☆ | 2 | ✅ Hecha |
 | 5 | Salida Markdown (`$GITHUB_STEP_SUMMARY`) y umbrales `--fail-on` | S | Medio | ★★★★☆ | 3, 4 | ⬜ Pendiente |
 | 6 | CI propio, publicación en PyPI y README con demo | S | Medio | ★★★★☆ | 1–5 | ⬜ Pendiente |
 | 7 | GitHub Action que comenta en PRs el impacto en tiempos | M | Alto | ★★★☆☆ | 5, 6 | ⬜ Pendiente |
@@ -72,11 +72,23 @@ el **69,2%** del tiempo total. De ahí `--group-matrix`.
 
 ## 4. Flaky real y regresiones
 
-- Flaky = mismo `head_sha` con fallo y éxito, o `run_attempt > 1` que termina en éxito
-  (usar `is_retry`, hoy calculado pero ignorado).
-- Reemplazar el criterio SLOW actual (`max > 1.5 × p90`, muy ruidoso) por regresión:
-  mediana de ventana reciente vs. línea base, con umbral y número mínimo de muestras.
-- Reportar el commit/rango donde empezó la regresión.
+- [x] Flaky = el mismo paso falló y pasó **en el mismo commit**. Se comparan las patas de
+      la matriz por separado (un fallo solo en Windows es una rotura, no flaky) y por
+      workflow. Se traen también los intentos anteriores de los runs re-ejecutados, para
+      contar los "pasó al reintentar". Sin datos de commit (logs de texto) se usa el
+      criterio por tasa, y el reporte lo dice.
+- [x] El criterio SLOW (`max > 1.5 × p90`) se eliminó. En su lugar, regresión por punto de
+      cambio: la historia se parte donde mejor separa dos tramos estables; debe subir
+      ≥25% (`--regression-threshold`) y ≥10 s, y seguir alta en los 5 builds más recientes.
+- [x] El reporte nombra el commit y el build donde empezó la regresión.
+
+**En datos reales** (psf/requests, 40 runs): desaparecen los avisos SLOW ruidosos
+("Set up job: P90 1s, Max 3s"). No hubo flaky ni regresiones en esa ventana, y solo 3 pasos
+tenían los ≥10 builds necesarios: hace falta más historia (y un token) para ver detecciones
+reales. La lógica está cubierta por tests con casos construidos.
+
+**De paso:** los tests de propiedades fallaban de forma intermitente por el límite de
+200 ms por ejemplo de Hypothesis (máquina cargada). Se quitó ese límite en `tests/conftest.py`.
 
 ## 5. Salida Markdown y umbrales
 
