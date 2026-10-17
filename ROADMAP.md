@@ -114,8 +114,9 @@ UTF-8. Ahora la salida es siempre UTF-8, con un test que simula ese stdout.
       Markdown en la página de resumen de cada run. Badge de CI en el README.
 - [ ] **Publicar en PyPI** — requiere configurar el trusted publisher en la cuenta de PyPI
       y crear el environment `pypi` en GitHub (pasos en el README, "Releasing").
-- [ ] Lint (p. ej. ruff): no incluido; el código nunca pasó por un linter y conviene
-      hacerlo en un cambio aparte.
+- [x] Lint con ruff: reglas fijadas en `pyproject.toml` (errores, bugbear, orden de imports,
+      sintaxis moderna) y job en el CI. 35 hallazgos corregidos; los relevantes: 8 excepciones
+      re-lanzadas sin su causa y un patrón de CircleCI definido pero nunca usado.
 
 **Nota:** en el primer run el job del reporte falló de forma esperada: corre durante el
 propio run y todavía no existía ningún run completado de `ci.yml` (sale con código 1, "No

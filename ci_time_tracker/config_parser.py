@@ -5,8 +5,9 @@ various providers (GitHub Actions, GitLab CI, CircleCI) and extract
 pipeline step information.
 """
 
-import yaml
 from typing import Any
+
+import yaml
 
 from ci_time_tracker.models import PipelineConfig, PipelineStep
 
@@ -66,7 +67,7 @@ def detect_provider(content: str) -> str:
             "Invalid YAML syntax",
             line=line,
             details=str(e)
-        )
+        ) from e
     
     if not isinstance(data, dict):
         raise ConfigParseError(
@@ -174,7 +175,7 @@ def parse_config(content: str, provider: str | None = None) -> PipelineConfig:
             "Invalid YAML syntax",
             line=line,
             details=str(e)
-        )
+        ) from e
     
     if not isinstance(data, dict):
         raise ConfigParseError(

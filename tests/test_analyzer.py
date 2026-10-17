@@ -8,18 +8,12 @@ Tests cover:
 """
 
 import math
-from hypothesis import given, settings, strategies as st, assume
 
-from ci_time_tracker.analyzer import (
-    compute_percentiles, 
-    analyze_config
-)
-from ci_time_tracker.models import (
-    StepStatistics, 
-    PipelineStep, 
-    PipelineConfig
-)
+from hypothesis import assume, given, settings
+from hypothesis import strategies as st
 
+from ci_time_tracker.analyzer import analyze_config, compute_percentiles
+from ci_time_tracker.models import PipelineConfig, PipelineStep, StepStatistics
 
 # Hypothesis strategies for generating valid duration lists
 

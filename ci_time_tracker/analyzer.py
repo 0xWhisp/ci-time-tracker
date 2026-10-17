@@ -10,18 +10,18 @@ from collections import Counter, defaultdict
 from statistics import median
 from typing import Any
 
+from ci_time_tracker.detection import (
+    DEFAULT_MIN_SAMPLES,
+    DEFAULT_REGRESSION_THRESHOLD,
+    detect_flaky_by_commit,
+    detect_regression,
+)
 from ci_time_tracker.models import (
     AnalysisResult,
     BuildLog,
     PipelineConfig,
     PipelineStep,
     StepStatistics,
-)
-from ci_time_tracker.detection import (
-    DEFAULT_MIN_SAMPLES,
-    DEFAULT_REGRESSION_THRESHOLD,
-    detect_flaky_by_commit,
-    detect_regression,
 )
 from ci_time_tracker.pricing import PricingTable, attributed_cost, job_cost
 

@@ -7,7 +7,8 @@ and report completeness.
 import json
 from datetime import datetime, timezone
 
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from ci_time_tracker.models import (
     AnalysisResult,
@@ -16,12 +17,11 @@ from ci_time_tracker.models import (
     StepStatistics,
 )
 from ci_time_tracker.reporter import (
-    generate_report,
     format_json,
     format_text,
+    generate_report,
     parse_json_report,
 )
-
 
 # Hypothesis strategies for generating valid Report components
 

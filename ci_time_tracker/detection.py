@@ -13,8 +13,9 @@ recent builds, so that a spike that already recovered is not reported.
 """
 
 from collections import defaultdict
+from collections.abc import Callable
 from statistics import median
-from typing import Any, Callable
+from typing import Any
 
 from ci_time_tracker.models import BuildLog
 

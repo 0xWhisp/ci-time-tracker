@@ -360,12 +360,6 @@ def _parse_circleci_log(content: str) -> list[StepExecution]:
         re.MULTILINE | re.IGNORECASE
     )
     
-    # Alternative pattern for CircleCI command output
-    command_pattern = re.compile(
-        r'#!/bin/bash.*?\n(.+?)(?=\n#!/bin/bash|\Z)',
-        re.DOTALL
-    )
-    
     # Pattern for timing output
     timing_pattern = re.compile(
         r'real\s+(\d+)m([\d.]+)s',
@@ -469,7 +463,7 @@ def parse_json_log(content: str) -> BuildLog:
     try:
         data = json.loads(content)
     except json.JSONDecodeError as e:
-        raise LogParseError(f"Invalid JSON syntax: {e.msg}", e.pos)
+        raise LogParseError(f"Invalid JSON syntax: {e.msg}", e.pos) from e
     
     steps: list[StepExecution] = []
     build_id: str | None = None
@@ -721,7 +715,7 @@ def _extract_steps_from_dict(data: dict) -> list[StepExecution]:
     
     # If no steps found, check for nested job structures (GitHub Actions style)
     if not steps and "jobs" in data and isinstance(data["jobs"], dict):
-        for job_name, job_data in data["jobs"].items():
+        for job_data in data["jobs"].values():
             if isinstance(job_data, dict):
                 job_steps = job_data.get("steps", [])
                 if isinstance(job_steps, list):

@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hypothesis import given, settings, strategies as st
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from ci_time_tracker.cli import (
     load_estimates,

@@ -397,6 +397,9 @@ pytest
 
 # Run with coverage
 pytest --cov=ci_time_tracker
+
+# Lint (rules are pinned in pyproject.toml)
+ruff check .
 ```
 
 CI runs the suite on Linux and Windows for Python 3.10 to 3.14, then runs

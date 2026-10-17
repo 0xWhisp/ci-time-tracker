@@ -8,12 +8,12 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 from ci_time_tracker.analyzer import analyze_config, analyze_logs
 from ci_time_tracker.cache import RunCache
 from ci_time_tracker.config_parser import parse_config
 from ci_time_tracker.detection import DEFAULT_REGRESSION_THRESHOLD
+from ci_time_tracker.gates import GATE_CHOICES, evaluate_gates
 from ci_time_tracker.github_api import (
     DEFAULT_RUN_LIMIT,
     GitHubAPIError,
@@ -21,7 +21,6 @@ from ci_time_tracker.github_api import (
 )
 from ci_time_tracker.log_parser import parse_log
 from ci_time_tracker.pricing import load_pricing
-from ci_time_tracker.gates import GATE_CHOICES, evaluate_gates
 from ci_time_tracker.reporter import (
     format_json,
     format_markdown,
@@ -35,7 +34,7 @@ def _positive_percentage(value: str) -> float:
     try:
         number = float(value)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"'{value}' is not a number")
+        raise argparse.ArgumentTypeError(f"'{value}' is not a number") from None
     if number <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
     return number / 100.0
@@ -57,7 +56,7 @@ def _positive_seconds(value: str) -> float:
     try:
         number = float(value)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"'{value}' is not a number")
+        raise argparse.ArgumentTypeError(f"'{value}' is not a number") from None
     if number <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
     return number
@@ -233,12 +232,12 @@ def read_input(path: str) -> str:
         raise FileNotFoundError(f"File not found: {path}")
     
     if not file_path.is_file():
-        raise IOError(f"Path is not a file: {path}")
+        raise OSError(f"Path is not a file: {path}")
     
     try:
         return file_path.read_text(encoding="utf-8")
     except Exception as e:
-        raise IOError(f"Error reading file {path}: {e}")
+        raise OSError(f"Error reading file {path}: {e}") from e
 
 
 def write_output(content: str, path: str | None) -> None:
@@ -260,7 +259,7 @@ def write_output(content: str, path: str | None) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(content, encoding="utf-8")
     except Exception as e:
-        raise IOError(f"Error writing to file {path}: {e}")
+        raise OSError(f"Error writing to file {path}: {e}") from e
 
 
 def load_estimates(path: str) -> dict[str, float]:
@@ -286,7 +285,7 @@ def load_estimates(path: str) -> dict[str, float]:
             f"Invalid JSON in estimates file: {e.msg}",
             e.doc,
             e.pos
-        )
+        ) from e
     
     if not isinstance(data, dict):
         raise ValueError("Estimates file must contain a JSON object (dictionary)")
@@ -354,7 +353,7 @@ def main() -> int:
             except FileNotFoundError as e:
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
-            except IOError as e:
+            except OSError as e:
                 print(f"Error: {e}", file=sys.stderr)
                 return 1
             
@@ -373,7 +372,7 @@ def main() -> int:
             if args.estimates:
                 try:
                     estimates = load_estimates(args.estimates)
-                except (FileNotFoundError, IOError) as e:
+                except (OSError, FileNotFoundError) as e:
                     print(f"Error loading estimates: {e}", file=sys.stderr)
                     return 1
                 except (json.JSONDecodeError, ValueError) as e:
@@ -404,7 +403,7 @@ def main() -> int:
                 try:
                     log_content = read_input(args.logs)
                     logs_to_parse.append(log_content)
-                except (FileNotFoundError, IOError) as e:
+                except (OSError, FileNotFoundError) as e:
                     print(f"Error: {e}", file=sys.stderr)
                     return 1
             
@@ -490,7 +489,7 @@ def main() -> int:
         # Write output
         try:
             write_output(output, args.output)
-        except IOError as e:
+        except OSError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
         

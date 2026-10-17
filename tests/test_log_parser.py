@@ -7,17 +7,16 @@ Tests cover:
 - Requirements: 6.3, 7.4
 """
 
+
 import pytest
-from datetime import datetime
 
 from ci_time_tracker.log_parser import (
+    LogParseError,
+    detect_format,
+    parse_json_log,
     parse_log,
     parse_text_log,
-    parse_json_log,
-    detect_format,
-    LogParseError,
 )
-from ci_time_tracker.models import BuildLog
 
 
 class TestFormatDetection:
@@ -155,7 +154,7 @@ Build #12345 started
 """
         result = parse_text_log(log)
         assert len(result.steps) == 1
-        assert result.steps[0].is_retry == True
+        assert result.steps[0].is_retry is True
 
 
 class TestJsonLogParsing:
@@ -217,8 +216,8 @@ class TestJsonLogParsing:
 ]
 """
         result = parse_json_log(log)
-        assert result.steps[0].is_retry == True
-        assert result.steps[1].is_retry == True
+        assert result.steps[0].is_retry is True
+        assert result.steps[1].is_retry is True
 
     def test_parse_json_empty_array(self):
         """Parse empty JSON array."""

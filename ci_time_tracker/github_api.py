@@ -10,10 +10,11 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Iterator, Literal
+from typing import Any, Literal
 
 from ci_time_tracker.models import BuildLog, StepExecution
 

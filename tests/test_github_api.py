@@ -20,7 +20,6 @@ from ci_time_tracker.github_api import (
     resolve_token,
 )
 
-
 # --- Recorded payloads (trimmed to the fields the client reads) -------------
 
 RUN = {
