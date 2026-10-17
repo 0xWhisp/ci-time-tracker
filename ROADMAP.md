@@ -50,8 +50,15 @@ La función principal hoy da resultados incorrectos con logs reales.
 **Aceptación:** analizar 200 runs de un repo público en < 1 min la primera vez y < 5 s con caché.
 
 **Medido** (psf/requests, 10 runs, sin token): 6,6 s en serie → **2,2 s** concurrente en frío y
-**0,6 s** con caché. Extrapolado, 200 runs ≈ 15 s. Falta confirmarlo con 200 runs reales, que
-necesita un token (sin él GitHub permite 60 peticiones por hora).
+**0,6 s** con caché. Extrapolado, 200 runs ≈ 15 s.
+
+**Criterio verificado** con 200 runs reales en el CI (workflow `benchmark.yml`, que corre con
+token y se repite cuando cambia la ingesta o el análisis). La primera corrida **falló** el
+límite con caché (6 s): el cuello de botella era la detección de regresiones de la tarea 4,
+cuadrática por paso. Tras hacerla O(n log n): **15 s en frío y < 5 s con caché**
+([run 39059830326](https://github.com/0xWhisp/ci-time-tracker/actions/runs/39059830326)).
+El margen con caché es poco; lo que queda es arranque, el listado de runs (que no se
+cachea porque tiene que ver los nuevos) y el análisis.
 
 ## 3. Métricas accionables
 
