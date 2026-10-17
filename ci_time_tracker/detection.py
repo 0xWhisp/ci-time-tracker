@@ -12,6 +12,7 @@ must be large in both relative and absolute terms and still hold for the most
 recent builds, so that a spike that already recovered is not reported.
 """
 
+import heapq
 from collections import defaultdict
 from collections.abc import Callable
 from statistics import median
@@ -25,6 +26,9 @@ DEFAULT_MIN_INCREASE_SECONDS = 10.0
 
 _EXAMPLE_COMMITS = 3
 _SHORT_SHA = 7
+
+# Seconds of total deviation below which two candidate splits count as tied
+_COST_TOLERANCE = 1e-9
 
 
 def _short(sha: str) -> str:
@@ -71,24 +75,35 @@ def detect_flaky_by_commit(
             if log.build_id:
                 attempts[(workflow, step.name, log.build_id)].append((log.run_attempt, step.status))
 
+    # Map each step name once, not once per commit
+    reported_names: dict[str, str] = {}
+
+    def reported_name(name: str) -> str:
+        if name not in reported_names:
+            reported_names[name] = group(name)
+        return reported_names[name]
+
     observed: dict[str, set[str]] = defaultdict(set)
     flipped: dict[str, set[str]] = defaultdict(set)
 
     for (_, name, sha), statuses in outcomes.items():
-        reported = group(name)
+        reported = reported_name(name)
         observed[reported].add(sha)
-        if statuses == {"success", "failure"}:
+        if len(statuses) == 2:  # both success and failure
             flipped[reported].add(sha)
 
     recoveries: dict[str, int] = defaultdict(int)
 
     for (_, name, _), entries in attempts.items():
+        # A build attempted once cannot have recovered on a re-run
+        if len(entries) < 2:
+            continue
         failed_attempts = [attempt for attempt, status in entries if status == "failure"]
         if not failed_attempts:
             continue
         first_failure = min(failed_attempts)
         if any(status == "success" and attempt > first_failure for attempt, status in entries):
-            recoveries[group(name)] += 1
+            recoveries[reported_name(name)] += 1
 
     return {
         reported: {
@@ -102,10 +117,47 @@ def detect_flaky_by_commit(
     }
 
 
-def _segment(values: list[float]) -> tuple[float, float]:
-    """Median of a segment and its total absolute deviation from it."""
-    center = median(values)
-    return center, sum(abs(value - center) for value in values)
+def _prefix_medians_and_costs(values: list[float]) -> list[tuple[float, float]]:
+    """Median and total absolute deviation from it, for every prefix of values.
+
+    Entry i describes values[:i + 1]. Two heaps hold the lower and upper
+    halves, so each prefix costs O(log n) rather than a sort and a pass over
+    it. The total absolute deviation from the median equals the sum of the
+    upper half minus the sum of the lower half, the median itself left out.
+    """
+    lower: list[float] = []  # max-heap, stored negated
+    upper: list[float] = []  # min-heap
+    lower_sum = upper_sum = 0.0
+    results: list[tuple[float, float]] = []
+
+    for value in values:
+        if not lower or value <= -lower[0]:
+            heapq.heappush(lower, -value)
+            lower_sum += value
+        else:
+            heapq.heappush(upper, value)
+            upper_sum += value
+
+        # Keep the halves balanced; lower holds the extra value when odd
+        if len(lower) > len(upper) + 1:
+            moved = -heapq.heappop(lower)
+            lower_sum -= moved
+            heapq.heappush(upper, moved)
+            upper_sum += moved
+        elif len(upper) > len(lower):
+            moved = heapq.heappop(upper)
+            upper_sum -= moved
+            heapq.heappush(lower, -moved)
+            lower_sum += moved
+
+        if len(lower) > len(upper):
+            center = -lower[0]
+            results.append((center, upper_sum - (lower_sum - center)))
+        else:
+            center = (-lower[0] + upper[0]) / 2
+            results.append((center, upper_sum - lower_sum))
+
+    return results
 
 
 def detect_regression(
@@ -138,14 +190,19 @@ def detect_regression(
     if count < 2 * min_samples:
         return None
 
+    # prefix[i] describes durations[:i + 1]; suffix[i] describes durations[i:]
+    prefix = _prefix_medians_and_costs(durations)
+    suffix = _prefix_medians_and_costs(durations[::-1])[::-1]
+
     best: tuple[float, int, float, float] | None = None
 
     for split in range(min_samples, count - min_samples + 1):
-        before_median, before_cost = _segment(durations[:split])
-        after_median, after_cost = _segment(durations[split:])
+        before_median, before_cost = prefix[split - 1]
+        after_median, after_cost = suffix[split]
         cost = before_cost + after_cost
 
-        if best is None or cost < best[0]:
+        # Running sums are not exact, so a tie must not let a later split win
+        if best is None or cost < best[0] - _COST_TOLERANCE:
             best = (cost, split, before_median, after_median)
 
     if best is None:

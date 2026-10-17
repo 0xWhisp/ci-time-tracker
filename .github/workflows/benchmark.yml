@@ -3,7 +3,8 @@ name: Ingestion benchmark
 # Checks the API ingestion's acceptance criterion against the real GitHub API:
 # 200 runs of a busy public repository in under a minute with an empty cache,
 # and in under 5 seconds from the cache. Runs when the ingestion code changes,
-# or on demand.
+# or on demand. The analysis is part of what is timed, so changes to it run
+# the benchmark too.
 
 on:
   workflow_dispatch:
@@ -11,6 +12,8 @@ on:
     paths:
       - ci_time_tracker/github_api.py
       - ci_time_tracker/cache.py
+      - ci_time_tracker/analyzer.py
+      - ci_time_tracker/detection.py
       - .github/workflows/benchmark.yml
 
 permissions:

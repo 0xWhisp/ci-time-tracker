@@ -5,12 +5,19 @@ fallback, change-point regression detection, and how both reach the report.
 """
 
 from datetime import datetime, timedelta, timezone
+from statistics import median
 
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from ci_time_tracker.analyzer import analyze_logs, detect_flaky_steps
 from ci_time_tracker.cli import parse_args
-from ci_time_tracker.detection import detect_flaky_by_commit, detect_regression
+from ci_time_tracker.detection import (
+    _prefix_medians_and_costs,
+    detect_flaky_by_commit,
+    detect_regression,
+)
 from ci_time_tracker.models import BuildLog, StepExecution
 from ci_time_tracker.reporter import format_text, generate_report
 
@@ -243,6 +250,80 @@ class TestRegressionDetection:
 
         assert metadata["regression_checked_steps"] == 1
         assert metadata["regression_min_builds"] == 10
+
+
+def reference_regression(durations, threshold=0.25, min_samples=5, min_increase=10.0):
+    """The original O(n^2 log n) search, kept as an oracle for the fast one."""
+    def segment(values):
+        center = median(values)
+        return center, sum(abs(value - center) for value in values)
+
+    if len(durations) < 2 * min_samples:
+        return None
+
+    best = None
+    for split in range(min_samples, len(durations) - min_samples + 1):
+        before_median, before_cost = segment(durations[:split])
+        after_median, after_cost = segment(durations[split:])
+        if best is None or before_cost + after_cost < best[0]:
+            best = (before_cost + after_cost, split, before_median, after_median)
+
+    _, split, baseline, current = best
+    recent = median(durations[-min_samples:])
+    required = baseline * (1 + threshold)
+    if current < required or recent < required:
+        return None
+    if current - baseline < min_increase or recent - baseline < min_increase:
+        return None
+    return split, baseline, current
+
+
+class TestFastChangePoint:
+    """The heap-based search must agree exactly with the brute-force one.
+
+    Integer durations keep every median and sum exact in floating point, so
+    the two can be compared with == rather than approximately.
+    """
+
+    @given(st.lists(st.integers(min_value=0, max_value=10_000), min_size=1, max_size=60))
+    def test_prefix_statistics_match_a_direct_computation(self, values):
+        values = [float(value) for value in values]
+
+        for index, (center, cost) in enumerate(_prefix_medians_and_costs(values)):
+            prefix = values[: index + 1]
+            assert center == median(prefix)
+            assert cost == sum(abs(value - median(prefix)) for value in prefix)
+
+    @given(st.lists(st.integers(min_value=1, max_value=600), min_size=0, max_size=80))
+    @settings(max_examples=300)
+    def test_regression_matches_the_brute_force_search(self, values):
+        durations = [float(value) for value in values]
+
+        expected = reference_regression(durations)
+        result = detect_regression(samples(durations))
+
+        if expected is None:
+            assert result is None
+        else:
+            split, baseline, current = expected
+            assert result is not None
+            assert result["baseline_builds"] == split
+            assert result["baseline_median"] == baseline
+            assert result["current_median"] == current
+
+    def test_two_hundred_builds_are_fast(self):
+        """The case the ingestion benchmark caught: quadratic per step."""
+        import time
+
+        history_of_200 = samples([100.0] * 100 + [150.0] * 100)
+
+        start = time.perf_counter()
+        for _ in range(100):  # as for 100 steps
+            detect_regression(history_of_200)
+        elapsed = time.perf_counter() - start
+
+        # The brute-force search took several seconds for this
+        assert elapsed < 1.0
 
 
 class TestReportedIssues:

@@ -64,6 +64,11 @@ class PricingTable:
         default_factory=lambda: dict(DEFAULT_PRICES_USD_PER_MINUTE)
     )
     source: str = "built-in defaults"
+    # Resolved rates by runner string: an analysis asks once per step
+    # execution, for a handful of distinct runners
+    _resolved: dict[str | None, float | None] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def price_for(self, runner: str | None) -> float | None:
         """Return the USD-per-minute rate for a runner, or None if unknown.
@@ -72,6 +77,12 @@ class PricingTable:
         Unknown runners return None rather than 0, so that an incomplete
         estimate is never presented as a complete one.
         """
+        if runner not in self._resolved:
+            self._resolved[runner] = self._resolve(runner)
+        return self._resolved[runner]
+
+    def _resolve(self, runner: str | None) -> float | None:
+        """Look up a runner's rate, without caching."""
         if not runner:
             return None
 
