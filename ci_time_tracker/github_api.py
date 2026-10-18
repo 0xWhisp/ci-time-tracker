@@ -49,6 +49,14 @@ _CONCLUSION_STATUS: dict[str, Literal["success", "failure", "skipped"]] = {
 # Injectable so tests can run against recorded payloads instead of the network.
 Transport = Callable[[str, dict[str, str]], tuple[Any, dict[str, str]]]
 
+# A sender takes (method, url, headers, JSON body) and returns the parsed JSON
+# response. Used for the few writes (PR comments); injectable like Transport.
+Sender = Callable[[str, str, dict[str, str], dict[str, Any] | None], Any]
+
+# Marks the comment ci-time-tracker owns on a pull request, so a later run
+# updates it instead of adding another
+COMMENT_MARKER = "<!-- ci-time-tracker:pr-impact -->"
+
 
 class GitHubAPIError(Exception):
     """Raised when the GitHub API cannot be queried."""
@@ -85,6 +93,33 @@ def _urllib_transport(url: str, headers: dict[str, str]) -> tuple[Any, dict[str,
         raise GitHubAPIError(f"GitHub returned a non-JSON response for {url}") from error
 
 
+def _urllib_send(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    body: dict[str, Any] | None,
+) -> Any:
+    """Default sender: a JSON write request against the GitHub REST API."""
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(
+        url,
+        data=data,
+        method=method,
+        headers={**headers, "Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as error:
+        raise _http_error(error, url) from error
+    except urllib.error.URLError as error:
+        raise GitHubAPIError(f"Could not reach {url}: {error.reason}") from error
+    except json.JSONDecodeError as error:
+        raise GitHubAPIError(f"GitHub returned a non-JSON response for {url}") from error
+
+
 def _http_error(error: urllib.error.HTTPError, url: str) -> GitHubAPIError:
     """Turn an HTTPError into a GitHubAPIError with actionable wording."""
     remaining = error.headers.get("X-RateLimit-Remaining") if error.headers else None
@@ -98,7 +133,8 @@ def _http_error(error: urllib.error.HTTPError, url: str) -> GitHubAPIError:
     if error.code in (401, 403):
         return GitHubAPIError(
             f"GitHub denied access to {url} (HTTP {error.code}). Check that "
-            "GITHUB_TOKEN is set and has the 'actions:read' scope.",
+            "GITHUB_TOKEN is set and has the 'actions:read' scope (and "
+            "'pull-requests: write' to post comments).",
             status=error.code,
         )
     if error.code == 404:
@@ -112,19 +148,23 @@ def _http_error(error: urllib.error.HTTPError, url: str) -> GitHubAPIError:
 
 @dataclass
 class GitHubClient:
-    """Minimal read-only client for the GitHub Actions API.
+    """Minimal client for the GitHub Actions API.
+
+    Reads runs and jobs; the only write is the pull request comment.
 
     Attributes:
         repo: Repository in "owner/name" form
         token: Optional API token; without one only public data is reachable
         api_url: API root, overridable for GitHub Enterprise
-        transport: Injectable request function (see Transport)
+        transport: Injectable read function (see Transport)
+        sender: Injectable write function (see Sender)
     """
 
     repo: str
     token: str | None = None
     api_url: str = DEFAULT_API_URL
     transport: Transport = _urllib_transport
+    sender: Sender = _urllib_send
 
     def __post_init__(self) -> None:
         if self.repo.count("/") != 1 or not all(part.strip() for part in self.repo.split("/")):
@@ -151,6 +191,61 @@ class GitHubClient:
 
         payload, _ = self.transport(url, self._headers())
         return payload
+
+    def _send(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+        return self.sender(method, f"{self.api_url}{path}", self._headers(), body)
+
+    def fetch_run(self, run_id: int | str) -> dict[str, Any]:
+        """Return one workflow run's payload (its latest attempt)."""
+        return self._get(f"/repos/{self.repo}/actions/runs/{run_id}")
+
+    def fetch_default_branch(self) -> str:
+        """Return the repository's default branch."""
+        return self._get(f"/repos/{self.repo}")["default_branch"]
+
+    def find_pull_request(self, sha: str) -> int | None:
+        """Return the number of the open pull request whose head is `sha`.
+
+        The workflow_run event leaves its pull request list empty for pull
+        requests from forks, so the commit is looked up instead.
+        """
+        pulls = self._get(f"/repos/{self.repo}/commits/{sha}/pulls")
+        if not isinstance(pulls, list):
+            return None
+
+        candidates = [pull for pull in pulls if pull.get("state") == "open"] or pulls
+        for pull in candidates:
+            if (pull.get("head") or {}).get("sha") == sha:
+                return pull["number"]
+        return candidates[0]["number"] if candidates else None
+
+    def upsert_comment(self, number: int, body: str, marker: str = COMMENT_MARKER) -> tuple[str, str | None]:
+        """Create or update the pull request comment carrying `marker`.
+
+        Returns:
+            ("created" or "updated", the comment's URL)
+        """
+        page = 1
+        while True:
+            comments = self._get(
+                f"/repos/{self.repo}/issues/{number}/comments",
+                {"per_page": _PER_PAGE, "page": page},
+            )
+            comments = comments if isinstance(comments, list) else []
+
+            for comment in comments:
+                if marker in (comment.get("body") or ""):
+                    updated = self._send(
+                        "PATCH", f"/repos/{self.repo}/issues/comments/{comment['id']}", {"body": body}
+                    )
+                    return "updated", (updated or {}).get("html_url")
+
+            if len(comments) < _PER_PAGE:
+                break
+            page += 1
+
+        created = self._send("POST", f"/repos/{self.repo}/issues/{number}/comments", {"body": body})
+        return "created", (created or {}).get("html_url")
 
     def iter_workflow_runs(
         self,
@@ -181,10 +276,11 @@ class GitHubClient:
         page = 1
 
         while yielded < limit:
+            per_page = min(_PER_PAGE, limit - yielded)
             payload = self._get(
                 path,
                 {
-                    "per_page": min(_PER_PAGE, limit - yielded),
+                    "per_page": per_page,
                     "page": page,
                     "status": status,
                     "branch": branch,
@@ -199,6 +295,10 @@ class GitHubClient:
                 yielded += 1
                 if yielded >= limit:
                     return
+
+            # A short page is the last one; asking for the next would be wasted
+            if len(runs) < per_page:
+                return
 
             page += 1
 
@@ -466,3 +566,59 @@ def fetch_build_logs(
     ]
     logs.reverse()
     return logs
+
+
+def fetch_impact_inputs(
+    repo: str,
+    run_id: int | str,
+    baseline_branch: str | None = None,
+    baseline_runs: int = 20,
+    token: str | None = None,
+    cache: Any | None = None,
+    api_url: str = DEFAULT_API_URL,
+    transport: Transport = _urllib_transport,
+) -> tuple[dict[str, Any], list[BuildLog], list[BuildLog], str]:
+    """Fetch one run and the baseline to compare it with.
+
+    The baseline is the latest completed runs of the same workflow on
+    `baseline_branch` (the repository's default branch when omitted), the run
+    itself excluded.
+
+    Returns:
+        (run payload, the run's attempts oldest first, baseline logs, the
+        baseline branch)
+
+    Raises:
+        GitHubAPIError: If the API cannot be queried
+    """
+    client = GitHubClient(repo=repo, token=resolve_token(token), api_url=api_url, transport=transport)
+
+    run = client.fetch_run(run_id)
+    branch = baseline_branch or client.fetch_default_branch()
+
+    latest = int(run.get("run_attempt") or 1)
+    run_logs = [
+        build_log_from_run(
+            run if attempt == latest else _earlier_attempt(run, attempt),
+            client.fetch_run_jobs(run["id"], attempt),
+            superseded=attempt != latest,
+        )
+        for attempt in range(1, latest + 1)
+    ]
+
+    baseline = [
+        log
+        for log in fetch_build_logs(
+            repo,
+            workflow=str(run["workflow_id"]) if run.get("workflow_id") else None,
+            branch=branch,
+            limit=baseline_runs,
+            token=token,
+            cache=cache,
+            api_url=api_url,
+            transport=transport,
+        )
+        if log.build_id != str(run["id"])
+    ]
+
+    return run, run_logs, baseline, branch

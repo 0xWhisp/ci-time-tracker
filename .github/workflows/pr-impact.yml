@@ -1,0 +1,29 @@
+name: PR CI impact
+
+# Once CI finishes on a pull request, comments on it with how the change
+# affects CI time and cost, and whether failures are in known flaky steps.
+#
+# workflow_run runs the copy of this file on the default branch, with this
+# repository's token, and checks out the default branch: it can comment on
+# pull requests from forks without ever running their code. It also means
+# the workflow only takes effect once it is on the default branch.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: write
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      # The default branch, never the pull request's code
+      - uses: actions/checkout@v5
+
+      - uses: ./

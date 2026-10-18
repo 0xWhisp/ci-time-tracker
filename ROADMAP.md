@@ -12,7 +12,7 @@ Esfuerzo: **S** ≤ 1 día · **M** 2–3 días · **L** 4–6 días
 | 4 | Flaky real (mismo commit / reintentos) y detección de regresiones | M | Alto | ★★★★☆ | 2 | ✅ Hecha |
 | 5 | Salida Markdown (`$GITHUB_STEP_SUMMARY`) y umbrales `--fail-on` | S | Medio | ★★★★☆ | 3, 4 | ✅ Hecha |
 | 6 | CI propio, publicación en PyPI y README con demo | S | Medio | ★★★★☆ | 1–5 | 🟡 En curso |
-| 7 | GitHub Action que comenta en PRs el impacto en tiempos | M | Alto | ★★★☆☆ | 5, 6 | ⬜ Pendiente |
+| 7 | GitHub Action que comenta en PRs el impacto en tiempos | M | Alto | ★★★☆☆ | 5, 6 | ✅ Hecha (falta Marketplace) |
 | 8 | Recomendaciones cruzando config y datos reales | L | Alto (diferenciador) | ★★★☆☆ | 2, 3 | ⬜ Pendiente |
 | 9 | Proveedores GitLab y CircleCI por API + registro extensible | M c/u | Medio | ★★☆☆☆ | 2 | ⬜ Pendiente |
 | 10 | Reporte HTML con gráficos de tendencia | M | Medio | ★★☆☆☆ | 3, 4 | ⬜ Pendiente |
@@ -131,8 +131,26 @@ workflow runs found"). Está marcado `continue-on-error`, así que no tumba el b
 
 ## 7. GitHub Action para PRs
 
-- Action publicada en el Marketplace que comenta: "este PR hace el CI N s más lento", pasos
-  flaky tocados y costo estimado.
+- [x] Modo `--run-id`: compara un run con la mediana de los últimos N runs del mismo workflow
+      en la rama base (por defecto, la del repo), excluyendo el propio run. Tiempo total,
+      tiempo de cómputo, costo y los pasos que cambiaron ≥25% y ≥10 s.
+- [x] Fallos cruzados con la evidencia flaky de la rama base y de los re-runs del propio run:
+      "conocido como flaky, un re-run puede pasar" vs. "no conocido como flaky".
+- [x] Comentario único en el PR (se actualiza, no se duplica), con `--comment`; el PR se busca
+      por el commit, porque `workflow_run` no lo informa en PRs desde forks.
+- [x] `action.yml` compuesta + workflow `pr-impact.yml` con `workflow_run`: comenta en PRs de
+      forks sin ejecutar su código. Los inputs pasan por variables de entorno (sin inyección
+      de shell), con un test que lo verifica.
+- [x] Gates en modo PR: `--fail-on regression` (algún paso más lento) y `flaky`.
+- [ ] **Publicar en el Marketplace:** se hace al crear un release en GitHub (casilla
+      "Publish this Action to the GitHub Marketplace"), después de mergear a `main`.
+
+**Verificado con datos reales** contra el run 39102310449 de este repo. El workflow
+`pr-impact.yml` empieza a comentar recién cuando esté en `main`: `workflow_run` solo usa la
+copia de la rama por defecto.
+
+**De paso:** la paginación de runs pedía una página extra después de una incompleta; ahora
+corta ahí (una petición menos por listado).
 
 ## 8. Recomendaciones config × datos
 

@@ -8,17 +8,22 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from ci_time_tracker.analyzer import analyze_config, analyze_logs
 from ci_time_tracker.cache import RunCache
 from ci_time_tracker.config_parser import parse_config
 from ci_time_tracker.detection import DEFAULT_REGRESSION_THRESHOLD
-from ci_time_tracker.gates import GATE_CHOICES, evaluate_gates
+from ci_time_tracker.gates import GATE_CHOICES, evaluate_gates, evaluate_impact_gates
 from ci_time_tracker.github_api import (
     DEFAULT_RUN_LIMIT,
     GitHubAPIError,
+    GitHubClient,
     fetch_build_logs,
+    fetch_impact_inputs,
+    resolve_token,
 )
+from ci_time_tracker.impact import compare_run, format_impact_markdown
 from ci_time_tracker.log_parser import parse_log
 from ci_time_tracker.pricing import load_pricing
 from ci_time_tracker.reporter import (
@@ -134,6 +139,44 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         metavar="PATH",
         help="Location of the local run cache database. Only used with --github.",
     )
+
+    # Pull request mode: one run against its baseline
+    parser.add_argument(
+        "--run-id",
+        type=int,
+        metavar="ID",
+        help="Compare one workflow run with recent runs of the same workflow on the "
+             "baseline branch, instead of analyzing history. Requires --github.",
+    )
+
+    parser.add_argument(
+        "--baseline-branch",
+        type=str,
+        metavar="NAME",
+        help="Branch to compare --run-id with (default: the repository's default branch).",
+    )
+
+    parser.add_argument(
+        "--baseline-runs",
+        type=int,
+        default=20,
+        metavar="N",
+        help="Number of baseline runs to compare --run-id with (default: 20).",
+    )
+
+    parser.add_argument(
+        "--comment",
+        action="store_true",
+        help="Post the --run-id comparison as a comment on the run's pull request, "
+             "updating the previous one. Needs a token with pull-requests: write.",
+    )
+
+    parser.add_argument(
+        "--pr",
+        type=int,
+        metavar="NUMBER",
+        help="Pull request to comment on (default: found from the run's commit).",
+    )
     
     parser.add_argument(
         "--pricing",
@@ -208,7 +251,14 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         help="Path to JSON file mapping step names to estimated durations (in seconds). Only used with --config mode.",
     )
     
-    return parser.parse_args(args)
+    parsed = parser.parse_args(args)
+
+    if parsed.run_id is not None and not parsed.github:
+        parser.error("--run-id requires --github")
+    if (parsed.comment or parsed.pr is not None) and parsed.run_id is None:
+        parser.error("--comment and --pr require --run-id")
+
+    return parsed
 
 
 def read_input(path: str) -> str:
@@ -305,6 +355,76 @@ def load_estimates(path: str) -> dict[str, float]:
         estimates[key] = float(value)
     
     return estimates
+
+
+def _run_impact(args: argparse.Namespace, pricing: Any) -> int:
+    """Compare one run with its baseline, and optionally comment on its PR.
+
+    Returns:
+        Exit code
+    """
+    cache = None
+    if not args.no_cache:
+        try:
+            cache = RunCache(args.cache_path)
+        except Exception as e:
+            print(f"Warning: run cache unavailable ({e})", file=sys.stderr)
+
+    try:
+        run, run_logs, baseline, branch = fetch_impact_inputs(
+            repo=args.github,
+            run_id=args.run_id,
+            baseline_branch=args.baseline_branch,
+            baseline_runs=args.baseline_runs,
+            cache=cache,
+        )
+    except GitHubAPIError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 3
+    finally:
+        if cache is not None:
+            cache.close()
+
+    impact = compare_run(
+        run_logs,
+        baseline,
+        branch,
+        pricing=pricing,
+        group_matrix=args.group_matrix,
+        threshold=args.regression_threshold,
+    )
+    comment = format_impact_markdown(impact)
+
+    # The comparison is Markdown in both text and markdown formats
+    output = json.dumps(impact.to_dict(), indent=2, default=str) if args.format == "json" else comment
+
+    try:
+        write_output(output, args.output)
+    except OSError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.comment:
+        client = GitHubClient(repo=args.github, token=resolve_token())
+        try:
+            number = args.pr or client.find_pull_request(run.get("head_sha") or "")
+            if number is None:
+                print("Warning: no open pull request found for this run; not commenting", file=sys.stderr)
+            else:
+                action, url = client.upsert_comment(number, comment)
+                print(f"Comment {action} on pull request #{number}: {url}", file=sys.stderr)
+        except GitHubAPIError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 3
+
+    reasons = evaluate_impact_gates(impact, args.fail_on, args.max_duration)
+    if reasons:
+        print("Gate failed:", file=sys.stderr)
+        for reason in reasons:
+            print(f"  - {reason}", file=sys.stderr)
+        return 4
+
+    return 0
 
 
 def _use_utf8_output() -> None:
@@ -435,6 +555,9 @@ def main() -> int:
             )
 
         elif args.github:
+            if args.run_id is not None:
+                return _run_impact(args, pricing)
+
             # GitHub Actions API mode
             cache = None
             if not args.no_cache:

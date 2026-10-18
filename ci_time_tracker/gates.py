@@ -6,6 +6,7 @@ flaky or regressed, or when builds got too slow.
 
 from collections.abc import Iterable
 
+from ci_time_tracker.impact import RunImpact
 from ci_time_tracker.models import AnalysisResult
 from ci_time_tracker.reporter import format_duration
 
@@ -58,5 +59,50 @@ def evaluate_gates(
                 f"median build duration {format_duration(median_build)} exceeds "
                 f"the {format_duration(max_duration)} limit"
             )
+
+    return reasons
+
+
+def evaluate_impact_gates(
+    impact: RunImpact,
+    fail_on: Iterable[str] = (),
+    max_duration: float | None = None,
+) -> list[str]:
+    """Return the reasons a single run fails the gates (the pull request view).
+
+    Args:
+        impact: The run compared with its baseline
+        fail_on: "regression" fails when a step got significantly slower than
+            on the baseline branch; "flaky" when the run hit a step known to be
+            flaky, or one that only passed on re-run
+        max_duration: Fail when the run took longer than this many seconds
+
+    Returns:
+        Human-readable failure reasons
+    """
+    gates = set(fail_on)
+    reasons: list[str] = []
+
+    if "regression" in gates:
+        slower = [change.name for change in impact.changes if change.significant and change.delta_seconds > 0]
+        if slower:
+            count = len(slower)
+            reasons.append(
+                f"{count} step{'s' if count != 1 else ''} slower than on "
+                f"{impact.baseline_branch}: {_list_steps(slower)}"
+            )
+
+    if "flaky" in gates:
+        flaky = [failure.name for failure in impact.failures if failure.known_flaky]
+        flaky += [name for name in impact.recovered_on_rerun if name not in flaky]
+        if flaky:
+            count = len(flaky)
+            reasons.append(f"{count} flaky step{'s' if count != 1 else ''} hit: {_list_steps(flaky)}")
+
+    if max_duration is not None and impact.duration is not None and impact.duration > max_duration:
+        reasons.append(
+            f"run duration {format_duration(impact.duration)} exceeds "
+            f"the {format_duration(max_duration)} limit"
+        )
 
     return reasons
