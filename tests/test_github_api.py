@@ -263,6 +263,16 @@ class TestClientRequests:
         assert len(logs) == 101
         assert transport.calls_matching("page=2")
 
+    def test_short_page_is_the_last_one(self):
+        """Fewer runs than asked for means there is no next page to request."""
+        runs = [{**RUN, "id": 100 + index} for index in range(3)]
+        transport = FakeTransport(default_routes(runs=runs))
+
+        logs = fetch_build_logs("acme/web", limit=50, transport=transport)
+
+        assert len(logs) == 3
+        assert len(transport.calls_matching("/actions/runs?")) == 1
+
     def test_empty_page_stops_pagination(self):
         transport = FakeTransport([
             ("/actions/runs?", {"workflow_runs": []}),

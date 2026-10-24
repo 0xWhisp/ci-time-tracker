@@ -14,6 +14,8 @@ A minimal CLI tool for analyzing CI/CD pipeline configurations and build logs to
   name the commit where it started
 - **Cost and Time**: Rank steps by the time they consume, estimate cost per runner,
   and separate queue time from execution time
+- **Pull Request Comments**: A GitHub Action that tells each pull request how it
+  changes CI time and cost, and whether its failures are in known flaky steps
 - **Multiple Output Formats**: Human-readable text or JSON for dashboard integration
 
 ## Installation
@@ -283,6 +285,81 @@ ci-time-tracker --github acme/web --max-duration 600
 The report is written first, so a failing pipeline still shows why; the reasons
 are also printed to stderr. The median build duration counts each build once,
 leaving out the earlier attempts of re-runs.
+
+### Pull request comments (GitHub Action)
+
+Once CI finishes on a pull request, the action compares that run with the
+median of recent runs of the same workflow on the default branch and keeps a
+single comment on the pull request up to date:
+
+```markdown
+## ⏱️ CI time impact
+
+**CI** run 39102310449 on `9f8e7d6` took **8m 12s**: **🔺 +1m 30s (+22%)** compared
+with the median of the last 20 runs on `main`.
+
+| | `main` (median) | This run | Change |
+|---|---:|---:|---:|
+| Wall clock | 6m 42s | 8m 12s | 🔺 +1m 30s (+22%) |
+| Compute time | 36m 08s | 41m 10s | ≈ +5m 02s (+14%) |
+| Estimated cost | $0.29 | $0.33 | +$0.04 |
+
+### Steps that changed
+
+| Step | `main` (median) | This run | Change |
+|---|---:|---:|---:|
+| build / Run tests | 1m 52s | 2m 40s | 🔺 +48.0s (+43%) |
+
+### Failures
+
+- ❌ `integration / e2e`: ⚠️ known to be flaky (failed and passed on the same
+  commit in 2 of 15 commits). A re-run may pass.
+```
+
+Add it as a workflow of its own, triggered when CI completes:
+
+```yaml
+name: PR CI impact
+
+on:
+  workflow_run:
+    workflows: [CI]            # the name of your CI workflow
+    types: [completed]
+
+permissions:
+  actions: read
+  pull-requests: write
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: 0xWhisp/ci-time-tracker@main   # pin a release tag once published
+```
+
+`workflow_run` runs the copy of the workflow on the default branch with the
+repository's own token, so it can comment on pull requests from forks without
+ever running their code. For the same reason, it takes effect once the
+workflow file is on the default branch.
+
+| Input | Default | |
+|---|---|---|
+| `baseline-branch` | default branch | Branch to compare with |
+| `baseline-runs` | `20` | Recent baseline runs to compare with |
+| `group-matrix` | `true` | Merge the legs of matrix jobs |
+| `regression-threshold` | `25` | Percentage (and at least 10s) for a step to be listed |
+| `comment` | `true` | Post or update the pull request comment |
+| `fail-on` | | `regression` fails when a step got slower; `flaky` when the run hit a known flaky step |
+| `run-id` | the triggering run | Workflow run to report on |
+| `github-token` | `github.token` | Needs `actions: read` and `pull-requests: write` |
+
+The same comparison is available from the command line:
+
+```bash
+ci-time-tracker --github acme/web --run-id 39102310449 --group-matrix
+ci-time-tracker --github acme/web --run-id 39102310449 --comment   # post it
+```
 
 ### Exit codes
 
