@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A CLI tool for analyzing CI/CD pipeline configurations and build logs"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     {name = "ci-time-tracker contributors"}
 ]
@@ -20,10 +20,11 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Build Tools",
 ]
 dependencies = [
@@ -35,14 +36,15 @@ dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "hypothesis>=6.0",
+    "ruff>=0.17",
 ]
 
 [project.scripts]
 ci-time-tracker = "ci_time_tracker.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/example/ci-time-tracker"
-Repository = "https://github.com/example/ci-time-tracker"
+Homepage = "https://github.com/0xWhisp/ci-time-tracker"
+Repository = "https://github.com/0xWhisp/ci-time-tracker"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -63,3 +65,12 @@ exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",
 ]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# Errors and likely bugs, plus import order and modern syntax. Pinned rather
+# than left to ruff's defaults, so a ruff upgrade cannot change what CI
+# enforces.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]

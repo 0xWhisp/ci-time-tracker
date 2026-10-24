@@ -50,12 +50,18 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
                 "success_count": step.success_count,
                 "failure_count": step.failure_count,
                 "failure_rate": step.failure_rate,
+                "total_duration": step.total_duration,
+                "mean_duration": step.mean_duration,
                 "p50": step.p50,
                 "p90": step.p90,
                 "p95": step.p95,
                 "p99": step.p99,
-                "is_slow": step.is_slow,
+                "is_regression": step.is_regression,
                 "is_flaky": step.is_flaky,
+                "runner": step.runner,
+                "estimated_cost_usd": step.estimated_cost_usd,
+                "regression": step.regression,
+                "flaky_evidence": step.flaky_evidence,
             }
         elif isinstance(step, PipelineStep):
             # Config mode - include step info
@@ -72,27 +78,29 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
         
         steps_data.append(step_dict)
     
+    # Order log-mode steps by the time they consume, so the biggest
+    # contributors come first in every output format.
+    if result.mode == "log":
+        steps_data.sort(key=lambda step: step.get("total_duration") or 0.0, reverse=True)
+    
     # Build issues list
     issues: list[dict[str, Any]] = []
     
-    for slow_step in result.slowest_steps:
+    for regressed_step in result.regressed_steps:
         # Find the corresponding step to get more details
-        step_info = next((s for s in result.steps if s.name == slow_step), None)
-        
+        step_info = next((s for s in result.steps if s.name == regressed_step), None)
+
         issue = {
-            "type": "slow",
-            "step": slow_step,
+            "type": "regression",
+            "step": regressed_step,
             "severity": "warning",
         }
-        
-        if step_info and isinstance(step_info, StepStatistics):
-            if step_info.p90 is not None:
-                issue["p90"] = step_info.p90
-            if step_info.durations:
-                issue["max_duration"] = max(step_info.durations)
-        
+
+        if step_info and isinstance(step_info, StepStatistics) and step_info.regression:
+            issue.update(step_info.regression)
+
         issues.append(issue)
-    
+
     for flaky_step in result.flaky_steps:
         # Find the corresponding step to get more details
         step_info = next((s for s in result.steps if s.name == flaky_step), None)
@@ -107,6 +115,8 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
             issue["failure_rate"] = step_info.failure_rate
             issue["failure_count"] = step_info.failure_count
             issue["execution_count"] = step_info.execution_count
+            if step_info.flaky_evidence:
+                issue.update(step_info.flaky_evidence)
         
         issues.append(issue)
     
@@ -132,38 +142,200 @@ def format_json(report: Report) -> str:
     return json.dumps(report.to_dict(), indent=2)
 
 
-def format_text(report: Report) -> str:
+# Report width per mode: the log table carries more columns than the config one
+_LOG_WIDTH = 110
+_CONFIG_WIDTH = 80
+
+# How many steps the "top time consumers" ranking shows
+_TOP_CONSUMERS = 5
+
+
+def format_duration(seconds: float | None) -> str:
+    """Format a duration in seconds for humans (45.0s, 12m 30s, 3h 05m)."""
+    if seconds is None:
+        return "N/A"
+    
+    seconds = float(seconds)
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    
+    minutes, remainder = divmod(int(round(seconds)), 60)
+    if minutes < 60:
+        return f"{minutes}m {remainder:02d}s"
+    
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m"
+
+
+def format_cost(usd: float | None) -> str:
+    """Format a cost in US dollars, or N/A when it could not be estimated."""
+    if usd is None:
+        return "N/A"
+    return f"${usd:,.2f}"
+
+
+def _format_summary_value(key: str, value: Any) -> str:
+    """Format a summary value according to what the key measures."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if key.endswith(("_seconds", "_duration")):
+            return format_duration(value)
+        if key.endswith("_usd"):
+            return format_cost(value)
+    
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value)
+    
+    return str(value)
+
+
+def _rank_consumers(steps: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
+    """The steps that consume the most time, each with its share of the total.
+
+    Percentiles say how long a step takes; this says where the time actually
+    goes, which is what a CI budget is spent on.
+    """
+    consumers = sorted(
+        (step for step in steps if step.get("total_duration")),
+        key=lambda step: step["total_duration"],
+        reverse=True,
+    )[:_TOP_CONSUMERS]
+
+    total = sum(step.get("total_duration") or 0.0 for step in steps)
+
+    return [
+        (step, f"{step['total_duration'] / total * 100:.1f}%" if total else "N/A")
+        for step in consumers
+    ]
+
+
+def _format_top_consumers(steps: list[dict[str, Any]], width: int) -> list[str]:
+    """Text section ranking the steps that consume the most time."""
+    ranked = _rank_consumers(steps)
+
+    if not ranked:
+        return []
+
+    lines = ["TOP TIME CONSUMERS", "-" * width]
+
+    for rank, (step, share) in enumerate(ranked, start=1):
+        cost = step.get("estimated_cost_usd")
+        cost_str = format_cost(cost) if cost is not None else ""
+
+        lines.append(
+            f"  {rank}. {step['name'][:44]:<44} {format_duration(step['total_duration']):>9} "
+            f"{share:>7} {step.get('execution_count', 0):>5} runs {cost_str:>9}"
+        )
+
+    lines.append("")
+    return lines
+
+
+def _describe_origin(started: dict[str, Any]) -> str:
+    """Describe where a regression started: commit, build and date."""
+    commit = started.get("head_sha")
+    context = [
+        f"build {started['build_id']}" if started.get("build_id") else None,
+        str(started["timestamp"])[:10] if started.get("timestamp") else None,
+    ]
+    context_str = ", ".join(part for part in context if part)
+
+    if commit:
+        return f"commit {commit} ({context_str})" if context_str else f"commit {commit}"
+    return context_str
+
+
+def _format_issue_details(issue: dict[str, Any]) -> list[str]:
+    """Indented detail lines explaining why an issue was raised."""
+    details: list[str] = []
+
+    if issue["type"] == "regression":
+        if "baseline_median" in issue and "current_median" in issue:
+            pct = issue.get("increase_pct")
+            pct_str = f"+{pct * 100:.0f}%, " if pct is not None else ""
+            details.append(
+                f"    Median {format_duration(issue['baseline_median'])} -> "
+                f"{format_duration(issue['current_median'])} "
+                f"({pct_str}+{format_duration(issue.get('increase_seconds'))})"
+            )
+
+        origin = _describe_origin(issue.get("started_at") or {})
+        if origin:
+            details.append(f"    Started at {origin}")
+
+    elif issue["type"] == "flaky":
+        if issue.get("method") == "same-commit":
+            details.append(
+                f"    Failed and passed on the same commit in {issue.get('flaky_commits', 0)} "
+                f"of {issue.get('observed_commits', 0)} commits"
+            )
+            if issue.get("rerun_recoveries"):
+                details.append(f"    Passed on re-run after failing in {issue['rerun_recoveries']} run(s)")
+            if issue.get("example_commits"):
+                details.append(f"    e.g. {', '.join(issue['example_commits'])}")
+
+        elif "failure_rate" in issue:
+            failure_rate = issue["failure_rate"] * 100
+            failure_count = issue.get("failure_count", 0)
+            execution_count = issue.get("execution_count", 0)
+            details.append(
+                f"    Failure rate: {failure_rate:.1f}% "
+                f"({failure_count}/{execution_count} executions)"
+            )
+            if issue.get("method") == "failure-rate":
+                details.append(
+                    "    Based on failure rate only (no commit data), which cannot "
+                    "tell flakiness from real breakage"
+                )
+
+    return details
+
+
+def format_text(report: Report, top: int | None = None) -> str:
     """Format a Report as human-readable text.
     
     Args:
         report: The report to format
+        top: Show only the N steps that consume the most time; None or 0
+            shows every step. Percentiles alone make a long table hard to
+            read on a matrix build, where each leg is its own step.
         
     Returns:
         Formatted text string ready for console output
     """
     lines: list[str] = []
+    width = _LOG_WIDTH if report.mode == "log" else _CONFIG_WIDTH
     
     # Header
-    lines.append("=" * 80)
+    lines.append("=" * width)
     lines.append(report.title)
-    lines.append("=" * 80)
+    lines.append("=" * width)
     lines.append(f"Generated: {report.generated_at.strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"Mode: {report.mode}")
     lines.append("")
     
     # Summary
     lines.append("SUMMARY")
-    lines.append("-" * 80)
+    lines.append("-" * width)
     for key, value in report.summary.items():
         if key == "mode":
             continue  # Already displayed
-        lines.append(f"  {key}: {value}")
+        lines.append(f"  {key}: {_format_summary_value(key, value)}")
+    
+    if report.summary.get("estimated_cost_usd") is not None:
+        lines.append(
+            "  note: cost uses private-repository rates and GitHub's per-job "
+            "rounding; public repos pay nothing for standard runners"
+        )
     lines.append("")
+    
+    # Where the time goes
+    if report.mode == "log":
+        lines.extend(_format_top_consumers(report.steps, width))
     
     # Issues
     if report.issues:
         lines.append("ISSUES")
-        lines.append("-" * 80)
+        lines.append("-" * width)
         for issue in report.issues:
             issue_type = issue["type"].upper()
             step = issue["step"]
@@ -171,59 +343,54 @@ def format_text(report: Report) -> str:
             
             lines.append(f"  [{severity}] {issue_type}: {step}")
             
-            if issue["type"] == "slow":
-                if "p90" in issue and "max_duration" in issue:
-                    lines.append(f"    P90: {issue['p90']:.2f}s, Max: {issue['max_duration']:.2f}s")
-            elif issue["type"] == "flaky":
-                if "failure_rate" in issue:
-                    failure_rate = issue["failure_rate"] * 100
-                    failure_count = issue.get("failure_count", 0)
-                    execution_count = issue.get("execution_count", 0)
-                    lines.append(
-                        f"    Failure rate: {failure_rate:.1f}% "
-                        f"({failure_count}/{execution_count} executions)"
-                    )
+            lines.extend(_format_issue_details(issue))
         lines.append("")
-    
+
     # Steps
     lines.append("STEPS")
-    lines.append("-" * 80)
+    lines.append("-" * width)
     
     if report.mode == "log":
         # Log mode - show statistics
         lines.append(
-            f"{'Step Name':<30} {'Executions':>12} {'P50':>8} {'P90':>8} {'P95':>8} {'P99':>8} {'Flags':<10}"
+            f"{'Step Name':<38} {'Runs':>5} {'Total':>9} {'P50':>8} {'P90':>8} "
+            f"{'P95':>8} {'P99':>8} {'Cost':>8} {'Flags':<10}"
         )
-        lines.append("-" * 80)
+        lines.append("-" * width)
         
-        for step in report.steps:
-            name = step["name"][:29]  # Truncate long names
+        shown = report.steps[:top] if top else report.steps
+        
+        for step in shown:
+            name = step["name"][:37]  # Truncate long names
             exec_count = step.get("execution_count", 0)
             
-            p50 = step.get("p50")
-            p90 = step.get("p90")
-            p95 = step.get("p95")
-            p99 = step.get("p99")
-            
-            p50_str = f"{p50:.2f}s" if p50 is not None else "N/A"
-            p90_str = f"{p90:.2f}s" if p90 is not None else "N/A"
-            p95_str = f"{p95:.2f}s" if p95 is not None else "N/A"
-            p99_str = f"{p99:.2f}s" if p99 is not None else "N/A"
+            total_str = format_duration(step.get("total_duration"))
+            p50_str = f"{step['p50']:.2f}s" if step.get("p50") is not None else "N/A"
+            p90_str = f"{step['p90']:.2f}s" if step.get("p90") is not None else "N/A"
+            p95_str = f"{step['p95']:.2f}s" if step.get("p95") is not None else "N/A"
+            p99_str = f"{step['p99']:.2f}s" if step.get("p99") is not None else "N/A"
+            cost = step.get("estimated_cost_usd")
+            cost_str = format_cost(cost) if cost is not None else "N/A"
             
             flags = []
-            if step.get("is_slow"):
-                flags.append("SLOW")
+            if step.get("is_regression"):
+                flags.append("REGR")
             if step.get("is_flaky"):
                 flags.append("FLAKY")
             flags_str = ",".join(flags) if flags else ""
             
             lines.append(
-                f"{name:<30} {exec_count:>12} {p50_str:>8} {p90_str:>8} {p95_str:>8} {p99_str:>8} {flags_str:<10}"
+                f"{name:<38} {exec_count:>5} {total_str:>9} {p50_str:>8} {p90_str:>8} "
+                f"{p95_str:>8} {p99_str:>8} {cost_str:>8} {flags_str:<10}"
             )
+        
+        hidden = len(report.steps) - len(shown)
+        if hidden > 0:
+            lines.append(f"... and {hidden} more steps (use --top 0 to show all)")
     else:
         # Config mode - show steps and estimates
         lines.append(f"{'Step Name':<40} {'Stage':<20} {'Estimate':<15}")
-        lines.append("-" * 80)
+        lines.append("-" * width)
         
         for step in report.steps:
             name = step["name"][:39]
@@ -234,8 +401,139 @@ def format_text(report: Report) -> str:
             lines.append(f"{name:<40} {stage:<20} {estimate_str:<15}")
     
     lines.append("")
-    lines.append("=" * 80)
+    lines.append("=" * width)
     
+    return "\n".join(lines)
+
+
+_ISSUE_LABELS = {
+    "regression": "⚠️ Regression",
+    "flaky": "❌ Flaky",
+}
+
+
+def _md_cell(value: Any) -> str:
+    """Escape a value so it cannot break a Markdown table row."""
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
+def _md_seconds(value: float | None) -> str:
+    return format_duration(value) if value is not None else "–"
+
+
+def format_markdown(report: Report, top: int | None = None) -> str:
+    """Format a Report as GitHub-flavored Markdown.
+
+    Meant for a run's summary page ($GITHUB_STEP_SUMMARY) and PR comments:
+    the headline numbers, then the issues, then where the time goes, with the
+    full step table collapsed so the page stays short.
+
+    Args:
+        report: The report to format
+        top: Show only the N steps that consume the most time in the step
+            table; None or 0 shows every step
+
+    Returns:
+        Markdown text
+    """
+    summary = report.summary
+    lines: list[str] = [f"## {report.title}", ""]
+
+    facts = []
+    if "build_count" in summary:
+        builds = summary["build_count"]
+        facts.append(f"**{builds}** build{'s' if builds != 1 else ''}")
+    if summary.get("build_p50_seconds") is not None:
+        facts.append(f"median build **{format_duration(summary['build_p50_seconds'])}**")
+    if summary.get("total_execution_seconds") is not None:
+        facts.append(f"**{format_duration(summary['total_execution_seconds'])}** of execution")
+    if summary.get("total_queue_seconds") is not None:
+        facts.append(f"**{format_duration(summary['total_queue_seconds'])}** queued")
+    if summary.get("estimated_cost_usd") is not None:
+        facts.append(f"**{format_cost(summary['estimated_cost_usd'])}** estimated cost")
+    if facts:
+        lines += [" · ".join(facts), ""]
+
+    if report.mode == "log":
+        if report.issues:
+            lines += ["### Issues", ""]
+            for issue in report.issues:
+                label = _ISSUE_LABELS.get(issue["type"], issue["type"].title())
+                lines.append(f"- {label}: `{issue['step']}`")
+                for detail in _format_issue_details(issue):
+                    lines.append(f"  - {detail.strip()}")
+            lines.append("")
+        else:
+            lines += ["✅ No flaky steps or regressions found.", ""]
+
+        ranked = _rank_consumers(report.steps)
+        if ranked:
+            lines += [
+                "### Top time consumers",
+                "",
+                "| # | Step | Total | Share | Runs | Cost |",
+                "|--:|------|------:|------:|-----:|-----:|",
+            ]
+            for rank, (step, share) in enumerate(ranked, start=1):
+                cost = step.get("estimated_cost_usd")
+                lines.append(
+                    f"| {rank} | {_md_cell(step['name'])} | {format_duration(step['total_duration'])} "
+                    f"| {share} | {step.get('execution_count', 0)} "
+                    f"| {format_cost(cost) if cost is not None else '–'} |"
+                )
+            lines.append("")
+
+        shown = report.steps[:top] if top else report.steps
+        lines += [
+            f"<details><summary>All steps ({len(report.steps)})</summary>",
+            "",
+            "| Step | Runs | Total | P50 | P90 | P99 | Cost | Flags |",
+            "|------|-----:|------:|----:|----:|----:|-----:|-------|",
+        ]
+        for step in shown:
+            flags = [
+                flag for flag, key in (("REGR", "is_regression"), ("FLAKY", "is_flaky")) if step.get(key)
+            ]
+            cost = step.get("estimated_cost_usd")
+            lines.append(
+                f"| {_md_cell(step['name'])} | {step.get('execution_count', 0)} "
+                f"| {_md_seconds(step.get('total_duration'))} | {_md_seconds(step.get('p50'))} "
+                f"| {_md_seconds(step.get('p90'))} | {_md_seconds(step.get('p99'))} "
+                f"| {format_cost(cost) if cost is not None else '–'} | {' '.join(flags)} |"
+            )
+        hidden = len(report.steps) - len(shown)
+        if hidden > 0:
+            lines += ["", f"…and {hidden} more steps."]
+        lines += ["", "</details>", ""]
+
+        notes = []
+        if summary.get("flaky_detection") == "same-commit":
+            notes.append("flaky = failed and passed on the same commit")
+        elif summary.get("flaky_detection") == "failure-rate":
+            notes.append("flaky by failure rate only (no commit data)")
+        if "regression_checked_steps" in summary:
+            notes.append(
+                f"regressions checked on {summary['regression_checked_steps']} steps with "
+                f"≥{summary.get('regression_min_builds', '?')} builds"
+            )
+        if summary.get("estimated_cost_usd") is not None:
+            notes.append("cost at private-repository rates")
+        if notes:
+            lines += [f"<sub>{'; '.join(notes)}.</sub>", ""]
+
+    else:
+        lines += [
+            "| Step | Stage | Estimate |",
+            "|------|-------|---------:|",
+        ]
+        for step in report.steps:
+            estimate = step.get("estimated_duration")
+            lines.append(
+                f"| {_md_cell(step['name'])} | {_md_cell(step.get('stage') or '')} "
+                f"| {_md_seconds(estimate)} |"
+            )
+        lines.append("")
+
     return "\n".join(lines)
 
 

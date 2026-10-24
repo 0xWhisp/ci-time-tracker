@@ -1,0 +1,87 @@
+name: Ingestion benchmark
+
+# Checks the API ingestion's acceptance criterion against the real GitHub API:
+# 200 runs of a busy public repository in under a minute with an empty cache,
+# and in under 5 seconds from the cache. Runs when the ingestion code changes,
+# or on demand. The analysis is part of what is timed, so changes to it run
+# the benchmark too.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ci_time_tracker/github_api.py
+      - ci_time_tracker/cache.py
+      - ci_time_tracker/analyzer.py
+      - ci_time_tracker/detection.py
+      - .github/workflows/benchmark.yml
+
+permissions:
+  contents: read
+
+env:
+  REPO: psf/requests
+  BRANCH: main
+  RUNS: "200"
+  COLD_LIMIT_SECONDS: "60"
+  CACHED_LIMIT_SECONDS: "5"
+
+jobs:
+  benchmark:
+    name: 200 runs (cold < 60s, cached < 5s)
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: python -m pip install .
+
+      - name: Cold fetch, empty cache
+        run: |
+          start=$(date +%s%3N)
+          ci-time-tracker --github "$REPO" --branch "$BRANCH" --last "$RUNS" \
+            --cache-path "$RUNNER_TEMP/runs.db" --format json --output cold.json
+          echo "COLD_MS=$(( $(date +%s%3N) - start ))" >> "$GITHUB_ENV"
+
+      - name: Cached fetch
+        run: |
+          start=$(date +%s%3N)
+          ci-time-tracker --github "$REPO" --branch "$BRANCH" --last "$RUNS" \
+            --cache-path "$RUNNER_TEMP/runs.db" --format json --output cached.json
+          echo "CACHED_MS=$(( $(date +%s%3N) - start ))" >> "$GITHUB_ENV"
+
+      - name: Check acceptance criteria
+        run: |
+          python - <<'PY'
+          import json, os
+
+          env = os.environ
+          runs = int(env["RUNS"])
+          cold, cached = int(env["COLD_MS"]) / 1000, int(env["CACHED_MS"]) / 1000
+          builds = json.load(open("cold.json"))["summary"]["build_count"]
+          cold_limit = float(env["COLD_LIMIT_SECONDS"])
+          cached_limit = float(env["CACHED_LIMIT_SECONDS"])
+
+          checks = [
+              (f"Builds analyzed (>= {runs})", builds, builds >= runs),
+              (f"Cold fetch (< {cold_limit:.0f}s)", f"{cold:.1f}s", cold < cold_limit),
+              (f"Cached fetch (< {cached_limit:.0f}s)", f"{cached:.1f}s", cached < cached_limit),
+          ]
+
+          lines = [f"### Ingestion benchmark: {env['REPO']}", "", "| Check | Result | |", "|---|---|---|"]
+          lines += [f"| {name} | {value} | {'✅' if ok else '❌'} |" for name, value, ok in checks]
+          with open(env["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
+
+          for name, value, ok in checks:
+              print(f"{'PASS' if ok else 'FAIL'}  {name}: {value}")
+
+          if not all(ok for _, _, ok in checks):
+              raise SystemExit("Acceptance criteria not met")
+          PY

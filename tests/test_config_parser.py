@@ -2,15 +2,15 @@
 
 import pytest
 import yaml
-from hypothesis import given, strategies as st, settings
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from ci_time_tracker.config_parser import (
-    parse_config,
-    detect_provider,
     ConfigParseError,
     UnsupportedProviderError,
+    detect_provider,
+    parse_config,
 )
-from ci_time_tracker.models import PipelineConfig
 
 
 class TestGitHubActionsParser:

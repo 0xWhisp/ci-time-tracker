@@ -71,6 +71,8 @@ class StepExecution:
         duration_seconds: Computed or extracted duration in seconds
         status: Execution result (success, failure, skipped)
         is_retry: Whether this execution was a retry attempt
+        job_name: Name of the job this step ran in, when known
+        runner: Label or name of the machine that ran the step, when known
     """
     name: str
     start_time: datetime | None = None
@@ -78,6 +80,8 @@ class StepExecution:
     duration_seconds: float | None = None
     status: Literal["success", "failure", "skipped"] = "success"
     is_retry: bool = False
+    job_name: str | None = None
+    runner: str | None = None
 
     def validate(self) -> list[str]:
         """Validate the step execution and return list of validation errors."""
@@ -100,11 +104,19 @@ class BuildLog:
         steps: List of step executions from the log
         total_duration: Total build duration in seconds
         timestamp: When the build occurred
+        head_sha: Commit the build ran against, when known
+        run_attempt: Attempt number of the build (1 unless it was re-run)
+        conclusion: Overall build result as reported by the provider
+        metadata: Additional provider-specific data (jobs, queue times, ...)
     """
     build_id: str | None = None
     steps: list[StepExecution] = field(default_factory=list)
     total_duration: float | None = None
     timestamp: datetime | None = None
+    head_sha: str | None = None
+    run_attempt: int = 1
+    conclusion: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> list[str]:
         """Validate the build log and return list of validation errors."""
@@ -131,9 +143,17 @@ class StepStatistics:
         p90: 90th percentile duration
         p95: 95th percentile duration
         p99: 99th percentile duration
-        is_slow: Whether the step is flagged as slow
+        is_regression: Whether the step's duration regressed
         is_flaky: Whether the step is flagged as flaky
         failure_rate: Ratio of failures to total executions
+        total_duration: Sum of all recorded durations, i.e. the time this step
+            has consumed across every build
+        mean_duration: Average recorded duration
+        runner: Runner the step ran on, when known
+        estimated_cost_usd: Cost attributed to this step, when the runner's
+            rate is known
+        regression: Details of the duration regression, when there is one
+        flaky_evidence: Why the step was flagged as flaky, when it was
     """
     name: str
     execution_count: int = 0
@@ -144,9 +164,15 @@ class StepStatistics:
     p90: float | None = None
     p95: float | None = None
     p99: float | None = None
-    is_slow: bool = False
+    is_regression: bool = False
     is_flaky: bool = False
     failure_rate: float = 0.0
+    total_duration: float = 0.0
+    mean_duration: float | None = None
+    runner: str | None = None
+    estimated_cost_usd: float | None = None
+    regression: dict[str, Any] | None = None
+    flaky_evidence: dict[str, Any] | None = None
 
     def validate(self) -> list[str]:
         """Validate the statistics and return list of validation errors."""
@@ -178,14 +204,14 @@ class AnalysisResult:
         mode: Analysis mode (config or log)
         steps: List of step statistics (log mode) or pipeline steps (config mode)
         total_estimated_duration: Sum of estimated durations for config mode
-        slowest_steps: Names of steps flagged as slow
+        regressed_steps: Names of steps whose duration regressed
         flaky_steps: Names of steps flagged as flaky
         metadata: Additional analysis metadata
     """
     mode: Literal["config", "log"]
     steps: list[StepStatistics] | list[PipelineStep] = field(default_factory=list)
     total_estimated_duration: float | None = None
-    slowest_steps: list[str] = field(default_factory=list)
+    regressed_steps: list[str] = field(default_factory=list)
     flaky_steps: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -209,7 +235,7 @@ class Report:
         generated_at: Timestamp when report was generated
         summary: Summary statistics and counts
         steps: List of step data dictionaries
-        issues: List of detected issues (slow, flaky steps)
+        issues: List of detected issues (regressions, flaky steps)
     """
     title: str
     mode: str
