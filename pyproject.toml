@@ -1,23 +1,23 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ci-time-tracker"
-version = "0.1.0"
-description = "A CLI tool for analyzing CI/CD pipeline configurations and build logs"
+version = "0.2.0"
+description = "Find where CI time and money go: cost, flaky steps and regressions from GitHub Actions, and a PR comment action"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 authors = [
     {name = "ci-time-tracker contributors"}
 ]
-keywords = ["ci", "cd", "pipeline", "analysis", "devops"]
+keywords = ["ci", "cd", "github-actions", "flaky-tests", "ci-cost", "devops"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

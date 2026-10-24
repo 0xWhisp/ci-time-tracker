@@ -2,7 +2,10 @@
 
 [![CI](https://github.com/0xWhisp/ci-time-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/0xWhisp/ci-time-tracker/actions/workflows/ci.yml)
 
-A minimal CLI tool for analyzing CI/CD pipeline configurations and build logs to identify performance bottlenecks and flaky steps.
+Find where your CI time and money go. ci-time-tracker reads your GitHub Actions
+history and reports the steps that cost the most, the ones that are flaky, and
+the ones that got slower, with the commit where it started. Its GitHub Action
+comments on each pull request with how it changes CI time and cost.
 
 ## Features
 
@@ -496,8 +499,11 @@ settings.
 Then, for each release:
 
 1. Bump `version` in `pyproject.toml` and `__version__` in
-   `ci_time_tracker/__init__.py` (a test checks they agree).
+   `ci_time_tracker/__init__.py` (a test checks they agree), and add the
+   release to [CHANGELOG.md](CHANGELOG.md).
 2. Tag and push: `git tag v0.2.0 && git push origin v0.2.0`.
+3. Create the GitHub release from the tag, with the changelog entry as its
+   notes, and tick "Publish this Action to the GitHub Marketplace".
 
 The workflow refuses to publish when the tag and the versions disagree.
 
