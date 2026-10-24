@@ -110,6 +110,7 @@ class TestCompareRun:
 
         assert impact.changes == []
         assert impact.new_steps == []
+        assert impact.unjudged_steps == 2
 
     def test_build_totals_against_baseline_medians(self):
         impact = compare_run([run_of(tests=150.0, total=210.0)], baseline(), "main")
@@ -241,6 +242,24 @@ class TestImpactComment:
         text = format_impact_markdown(compare_run([first, second], baseline(), "main"))
 
         assert "🔁 `build / Run tests` failed on an earlier attempt of this run and passed on re-run" in text
+
+    def test_short_baseline_does_not_claim_nothing_changed(self):
+        """Seen on this repository's first PR comment: 2 runs on main, 0 compared."""
+        text = format_impact_markdown(compare_run([run_of(tests=500.0)], baseline(count=2), "main"))
+
+        assert "Not enough history on `main` yet to compare steps: each needs at least 3 baseline runs." in text
+        assert "No step changed" not in text
+
+    def test_partly_judged_steps_are_counted(self):
+        history = baseline() + [
+            build(50 + i, [step("build / Lint", 5.0)], day=50 + i) for i in range(2)
+        ]
+        current = run_of(tests=150.0, extra=[step("build / Lint", 5.0)])
+
+        text = format_impact_markdown(compare_run([current], history, "main"))
+
+        assert "| build / Run tests |" in text
+        assert "1 step with fewer than 3 runs on `main` was not compared." in text
 
     def test_new_steps_are_listed(self):
         text = format_impact_markdown(compare_run([run_of(extra=[step("build / Lint", 5.0)])], baseline(), "main"))

@@ -66,6 +66,9 @@ class RunImpact:
     baseline_cost_usd: float | None
     threshold: float
     min_seconds: float
+    min_baseline_builds: int = DEFAULT_MIN_BASELINE_BUILDS
+    # Steps with some baseline history, but too little to be judged
+    unjudged_steps: int = 0
     changes: list[StepChange] = field(default_factory=list)
     new_steps: list[str] = field(default_factory=list)
     failures: list[FailedStep] = field(default_factory=list)
@@ -133,6 +136,7 @@ def compare_run(
 
     changes: list[StepChange] = []
     new_steps: list[str] = []
+    unjudged = 0
 
     for name, current in _step_values(run, group_matrix).items():
         history = baseline_values.get(name)
@@ -140,6 +144,7 @@ def compare_run(
             new_steps.append(name)
             continue
         if len(history) < min_baseline_builds:
+            unjudged += 1
             continue
 
         base = median(history)
@@ -188,6 +193,8 @@ def compare_run(
         baseline_cost_usd=_median_or_none([cost for cost in map(build_cost, builds) if cost is not None]),
         threshold=threshold,
         min_seconds=min_seconds,
+        min_baseline_builds=min_baseline_builds,
+        unjudged_steps=unjudged,
         changes=changes,
         new_steps=new_steps,
         failures=failures,
@@ -287,11 +294,24 @@ def format_impact_markdown(impact: RunImpact) -> str:
                     f"| {format_duration(change.current)} "
                     f"| {_change_cell(change.current, change.baseline_median, True)} |"
                 )
+        elif impact.unjudged_steps and not impact.changes:
+            # Saying "nothing changed" would claim steps were checked when none was
+            lines.append(
+                f"Not enough history on {branch} yet to compare steps: each needs at least "
+                f"{impact.min_baseline_builds} baseline runs."
+            )
         else:
             lines.append(
                 f"No step changed by more than {impact.threshold * 100:.0f}% "
                 f"and {format_duration(impact.min_seconds)}."
             )
+        if impact.unjudged_steps and impact.changes:
+            count = impact.unjudged_steps
+            lines += [
+                "",
+                f"{count} step{'s' if count != 1 else ''} with fewer than {impact.min_baseline_builds} "
+                f"runs on {branch} {'were' if count != 1 else 'was'} not compared.",
+            ]
         lines.append("")
 
     if impact.failures:
