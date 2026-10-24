@@ -47,16 +47,16 @@ class TestPricingTable:
     def test_known_runner_labels(self):
         table = PricingTable()
 
-        assert table.price_for("ubuntu-latest") == 0.008
-        assert table.price_for("windows-latest") == 0.016
-        assert table.price_for("macos-latest") == 0.08
+        assert table.price_for("ubuntu-latest") == 0.006
+        assert table.price_for("windows-latest") == 0.010
+        assert table.price_for("macos-latest") == 0.062
 
     def test_label_matching_is_case_insensitive(self):
         """GitHub reports labels like "macOS-latest"."""
-        assert PricingTable().price_for("macOS-latest") == 0.08
+        assert PricingTable().price_for("macOS-latest") == 0.062
 
     def test_first_known_label_of_a_list_wins(self):
-        assert PricingTable().price_for("ubuntu-latest, x64") == 0.008
+        assert PricingTable().price_for("ubuntu-latest, x64") == 0.006
 
     def test_self_hosted_is_free(self):
         """A self-hosted runner costs nothing on GitHub's bill."""
@@ -70,12 +70,14 @@ class TestPricingTable:
         assert PricingTable().price_for("") is None
 
     def test_larger_runners_priced_by_core_count(self):
-        """Linux and Windows rates scale linearly with cores."""
+        """Published larger-runner rates, which do not scale linearly."""
         table = PricingTable()
 
-        assert table.price_for("ubuntu-latest-8-cores") == pytest.approx(0.032)
-        assert table.price_for("windows-latest-4-cores") == pytest.approx(0.032)
-        assert table.price_for("linux-16-core") == pytest.approx(0.064)
+        assert table.price_for("ubuntu-latest-8-cores") == 0.022
+        assert table.price_for("windows-latest-4-cores") == 0.022
+        assert table.price_for("linux-16-core") == 0.042
+        assert table.price_for("ubuntu-24.04-arm-8-cores") == 0.014
+        assert table.price_for("windows-arm-4-cores") == 0.014
 
     def test_core_count_without_known_platform_is_unknown(self):
         assert PricingTable().price_for("bespoke-8-cores") is None
@@ -186,8 +188,8 @@ class TestCostEstimates:
         logs = [build([step("test / Run tests", 600.0, runner="ubuntu-latest")])]
         stats = analyze_logs(logs).steps[0]
 
-        # 10 minutes at $0.008/min
-        assert stats.estimated_cost_usd == pytest.approx(0.08)
+        # 10 minutes at $0.006/min
+        assert stats.estimated_cost_usd == pytest.approx(0.06)
         assert stats.runner == "ubuntu-latest"
 
     def test_unknown_runner_leaves_cost_unset(self):
@@ -206,8 +208,8 @@ class TestCostEstimates:
 
         metadata = analyze_logs(logs).metadata
 
-        # 2 min x $0.008 + 1 min x $0.016
-        assert metadata["estimated_cost_usd"] == pytest.approx(0.032)
+        # 2 min x $0.006 + 1 min x $0.010
+        assert metadata["estimated_cost_usd"] == pytest.approx(0.022)
         assert metadata["priced_jobs"] == 2
         assert metadata["job_count"] == 2
 
@@ -343,8 +345,8 @@ class TestReportPresentation:
 
         assert "total_execution_seconds: 6m 45s" in text
         assert "total_queue_seconds: 12.0s" in text
-        assert "estimated_cost_usd: $0.06" in text  # 7 rounded-up minutes
-        assert "private-repository rates" in text
+        assert "estimated_cost_usd: $0.04" in text  # 7 rounded-up minutes
+        assert "private-repository list prices" in text
 
     def test_top_limits_the_table_and_says_so(self):
         text = format_text(self._report(), top=1)
@@ -358,8 +360,8 @@ class TestReportPresentation:
         text = format_text(self._report())
 
         assert "Cost" in text
-        # 300s at $0.008/min, attributed without rounding
-        assert "$0.04" in text
+        # 300s at $0.006/min, attributed without rounding
+        assert "$0.03" in text
 
     def test_format_duration_units(self):
         assert format_duration(None) == "N/A"
@@ -371,3 +373,78 @@ class TestReportPresentation:
         assert format_cost(None) == "N/A"
         assert format_cost(0.0) == "$0.00"
         assert format_cost(1234.5) == "$1,234.50"
+
+
+class TestRunnerFamilies:
+    """Labels found in real repositories (field test, 2026-10)."""
+
+    @pytest.mark.parametrize("label, price", [
+        ("ubuntu-26.04", 0.006),
+        ("ubuntu-20.04", 0.006),
+        ("ubuntu-slim", 0.002),
+        ("ubuntu-24.04-arm", 0.005),
+        ("ubuntu-26.04-arm", 0.005),
+        ("windows-2025", 0.010),
+        ("windows-11-arm", 0.010),
+        ("macos-26", 0.062),
+        ("macos-15-intel", 0.062),
+        ("macos-26-intel", 0.062),
+        ("macos-14-large", 0.077),
+        ("macos-15-xlarge", 0.102),
+    ])
+    def test_github_hosted_label_families(self, label, price):
+        """New versions of a family are priced without a table update."""
+        assert PricingTable().price_for(label) == price
+
+    @pytest.mark.parametrize("label", [
+        "depot-ubuntu-24.04",
+        "namespace-profile-windows-2022-x86-64-4",
+        "codspeed-macro-x64-ryzen-9950x-ubuntu-24-04",
+        "ubuntu-24.04-6-cores",  # no published 6-core rate
+    ])
+    def test_third_party_and_unpublished_runners_stay_unpriced(self, label):
+        """Other providers bill separately; a guess would be worse than nothing."""
+        assert PricingTable().price_for(label) is None
+
+    def test_pricing_file_overrides_a_family(self, tmp_path):
+        path = tmp_path / "pricing.json"
+        path.write_text(json.dumps({"ubuntu-24.04": 0.5}), encoding="utf-8")
+
+        table = load_pricing(path)
+
+        assert table.price_for("ubuntu-24.04") == 0.5
+        assert table.price_for("ubuntu-22.04") == 0.006
+
+    def test_default_source_dates_the_prices(self):
+        assert "2026-10" in PricingTable().source
+
+
+class TestPartialCost:
+    """A cost that covers only some jobs must say so."""
+
+    def _logs(self):
+        jobs = [
+            {"name": "a", "runner": "ubuntu-latest", "duration_seconds": 60.0},
+            {"name": "b", "runner": "depot-ubuntu-24.04", "duration_seconds": 600.0},
+            {"name": "c", "runner": "depot-ubuntu-24.04", "duration_seconds": 600.0},
+        ]
+        return [build([step("a / x", 60.0)], jobs=jobs)]
+
+    def test_text_report_states_coverage(self):
+        text = format_text(generate_report(analyze_logs(self._logs())))
+
+        assert "cost covers only 1 of 3 jobs" in text
+        assert "depot-ubuntu-24.04" in text
+
+    def test_markdown_headline_states_coverage(self):
+        from ci_time_tracker.reporter import format_markdown
+
+        markdown = format_markdown(generate_report(analyze_logs(self._logs())))
+
+        assert "estimated cost (1 of 3 jobs priced)" in markdown
+
+    def test_full_coverage_has_no_caveat(self):
+        jobs = [{"name": "a", "runner": "ubuntu-latest", "duration_seconds": 60.0}]
+        text = format_text(generate_report(analyze_logs([build([step("a / x", 60.0)], jobs=jobs)])))
+
+        assert "cost covers only" not in text

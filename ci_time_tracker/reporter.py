@@ -174,6 +174,22 @@ def format_cost(usd: float | None) -> str:
     return f"${usd:,.2f}"
 
 
+def cost_coverage(summary: dict[str, Any]) -> str | None:
+    """Explain a partial cost estimate, or None when every job was priced.
+
+    Third-party and self-named runners have no known rate, and leaving them
+    out silently would present part of the cost as all of it.
+    """
+    jobs = summary.get("job_count") or 0
+    priced = summary.get("priced_jobs") or 0
+    if summary.get("estimated_cost_usd") is None or not jobs or priced >= jobs:
+        return None
+    return (
+        f"cost covers only {priced} of {jobs} jobs; the rest ran on runners with "
+        "no known rate (see unpriced_runners, or add them with --pricing)"
+    )
+
+
 def _format_summary_value(key: str, value: Any) -> str:
     """Format a summary value according to what the key measures."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -323,9 +339,12 @@ def format_text(report: Report, top: int | None = None) -> str:
     
     if report.summary.get("estimated_cost_usd") is not None:
         lines.append(
-            "  note: cost uses private-repository rates and GitHub's per-job "
-            "rounding; public repos pay nothing for standard runners"
+            "  note: cost at GitHub's private-repository list prices, each job rounded "
+            "up to a whole minute; public repos pay nothing for standard runners"
         )
+        coverage = cost_coverage(report.summary)
+        if coverage:
+            lines.append(f"  note: {coverage}")
     lines.append("")
     
     # Where the time goes
@@ -450,7 +469,10 @@ def format_markdown(report: Report, top: int | None = None) -> str:
     if summary.get("total_queue_seconds") is not None:
         facts.append(f"**{format_duration(summary['total_queue_seconds'])}** queued")
     if summary.get("estimated_cost_usd") is not None:
-        facts.append(f"**{format_cost(summary['estimated_cost_usd'])}** estimated cost")
+        cost_fact = f"**{format_cost(summary['estimated_cost_usd'])}** estimated cost"
+        if cost_coverage(summary):
+            cost_fact += f" ({summary.get('priced_jobs', 0)} of {summary.get('job_count', 0)} jobs priced)"
+        facts.append(cost_fact)
     if facts:
         lines += [" · ".join(facts), ""]
 
@@ -517,7 +539,7 @@ def format_markdown(report: Report, top: int | None = None) -> str:
                 f"≥{summary.get('regression_min_builds', '?')} builds"
             )
         if summary.get("estimated_cost_usd") is not None:
-            notes.append("cost at private-repository rates")
+            notes.append("cost at GitHub list prices for private repositories")
         if notes:
             lines += [f"<sub>{'; '.join(notes)}.</sub>", ""]
 

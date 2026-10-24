@@ -138,8 +138,8 @@ class TestCompareRun:
 
         impact = compare_run([current], history, "main")
 
-        assert impact.baseline_cost_usd == pytest.approx(0.016)  # 2 min
-        assert impact.cost_usd == pytest.approx(0.040)  # 5 min
+        assert impact.baseline_cost_usd == pytest.approx(0.012)  # 2 min at $0.006
+        assert impact.cost_usd == pytest.approx(0.030)  # 5 min
 
     def test_failure_in_known_flaky_step(self):
         """The baseline shows it failing and passing on one commit."""
@@ -183,6 +183,20 @@ class TestCompareRun:
         assert impact.changes[0].name == "build / Run tests"
         assert impact.changes[0].baseline_median == 102.0
         assert impact.changes[0].current == 162.0
+
+    def test_partly_priced_run_is_labelled(self):
+        jobs = [
+            {"name": "build", "runner": "ubuntu-latest", "duration_seconds": 120.0},
+            {"name": "bench", "runner": "depot-ubuntu-24.04", "duration_seconds": 600.0},
+        ]
+        history = [build(i, [step("build / Run tests", 100.0)], jobs=jobs, day=i) for i in range(5)]
+        current = build(999, [step("build / Run tests", 100.0)], jobs=jobs, day=9)
+
+        impact = compare_run([current], history, "main")
+        text = format_impact_markdown(impact)
+
+        assert (impact.priced_jobs, impact.job_count) == (1, 2)
+        assert "| Estimated cost (1 of 2 jobs priced) |" in text
 
     def test_json_round_trip(self):
         impact = compare_run([run_of(tests=150.0)], baseline(), "main")
@@ -533,3 +547,36 @@ class TestActionDefinition:
         checkout = next(s for s in workflow["jobs"]["comment"]["steps"] if "checkout" in s.get("uses", ""))
 
         assert "with" not in checkout or "ref" not in checkout["with"]
+
+
+class TestNoRunsMessage:
+    """An empty branch points at the repository's default branch."""
+
+    def _run(self, monkeypatch, capsys, default_branch, *argv):
+        fake = FakeGitHub([(r"/repos/acme/web$", {"default_branch": default_branch})])
+        monkeypatch.setattr(
+            "ci_time_tracker.cli.GitHubClient",
+            lambda repo, token=None: GitHubClient(repo=repo, transport=fake.transport),
+        )
+        monkeypatch.setattr("ci_time_tracker.cli.fetch_build_logs", lambda **kwargs: [])
+        monkeypatch.setattr("sys.argv", ["ci-time-tracker", "--github", "acme/web", "--no-cache", *argv])
+
+        assert main() == 1
+        return capsys.readouterr().err
+
+    def test_wrong_branch_names_the_default(self, monkeypatch, capsys):
+        """Seen in the field test: fastapi's default branch is master."""
+        err = self._run(monkeypatch, capsys, "master", "--branch", "main")
+
+        assert "No completed workflow runs found on branch 'main'" in err
+        assert "default branch is 'master'" in err
+
+    def test_default_branch_itself_gets_no_hint(self, monkeypatch, capsys):
+        err = self._run(monkeypatch, capsys, "main", "--branch", "main")
+
+        assert "default branch is" not in err
+
+    def test_without_a_branch_the_message_is_unchanged(self, monkeypatch, capsys):
+        err = self._run(monkeypatch, capsys, "main")
+
+        assert "No workflow runs found to analyze" in err

@@ -1,9 +1,12 @@
 """Runner pricing for cost estimates.
 
-GitHub bills hosted runners per minute, rounding each job up to the next whole
-minute. The defaults below are GitHub's published rates for private
-repositories; public repositories do not pay for standard runners. Rates
-change, so they are overridable with a JSON file (see load_pricing).
+The defaults are GitHub's list prices for private repositories, as published at
+PRICES_SOURCE_URL on PRICES_AS_OF. Public repositories pay nothing for
+standard GitHub-hosted runners, and self-hosted runners are free. Prices
+change, so they can be overridden with a JSON file (see load_pricing).
+
+Each job's cost is its duration rounded up to a whole minute. GitHub has
+billed that way; its current documentation does not state the rounding.
 """
 
 import json
@@ -13,39 +16,44 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# USD per minute, private-repository rates for GitHub-hosted runners.
+PRICES_AS_OF = "2026-10"
+PRICES_SOURCE_URL = "https://docs.github.com/en/billing/reference/actions-runner-pricing"
+
+# USD per minute for the labels that are not versioned (versioned labels such
+# as ubuntu-24.04 or macos-15 are matched by _LABEL_FAMILIES below)
 DEFAULT_PRICES_USD_PER_MINUTE: dict[str, float] = {
-    # Linux, 2 cores
-    "ubuntu-latest": 0.008,
-    "ubuntu-24.04": 0.008,
-    "ubuntu-22.04": 0.008,
-    "ubuntu-20.04": 0.008,
-    # Windows, 2 cores
-    "windows-latest": 0.016,
-    "windows-2025": 0.016,
-    "windows-2022": 0.016,
-    "windows-2019": 0.016,
-    # macOS, 3-4 cores
-    "macos-latest": 0.08,
-    "macos-15": 0.08,
-    "macos-14": 0.08,
-    "macos-13": 0.08,
-    # macOS, 12 cores
-    "macos-latest-xlarge": 0.16,
-    "macos-15-xlarge": 0.16,
-    "macos-14-xlarge": 0.16,
+    "ubuntu-latest": 0.006,
+    "ubuntu-slim": 0.002,
+    "windows-latest": 0.010,
+    "macos-latest": 0.062,
+    "macos-latest-large": 0.077,
+    "macos-latest-xlarge": 0.102,
 }
 
-# Larger runners are named freely (e.g. "ubuntu-latest-8-cores"), so their
-# price is derived from the core count: on Linux and Windows the published
-# rates scale linearly with cores.
-_PRICE_PER_CORE: dict[str, float] = {
-    "ubuntu": 0.004,
-    "linux": 0.004,
-    "windows": 0.008,
+# GitHub-hosted label families, most specific first, so that labels GitHub
+# adds later (ubuntu-26.04, macos-26-intel, ...) are priced without an update
+_LABEL_FAMILIES: list[tuple[re.Pattern[str], float]] = [
+    (re.compile(r"^ubuntu-(latest|\d+\.\d+)-arm$"), 0.005),  # Linux 2-core arm64
+    (re.compile(r"^ubuntu-(latest|\d+\.\d+)$"), 0.006),  # Linux 2-core x64
+    (re.compile(r"^windows-(latest|\d+)-arm$"), 0.010),  # Windows 2-core arm64
+    (re.compile(r"^windows-(latest|\d{4})$"), 0.010),  # Windows 2-core x64
+    (re.compile(r"^macos-(latest|\d+)-xlarge$"), 0.102),  # macOS 5-core M2 Pro
+    (re.compile(r"^macos-(latest|\d+)-large$"), 0.077),  # macOS 12-core Intel
+    (re.compile(r"^macos-(latest|\d+)(-intel)?$"), 0.062),  # macOS 3/4-core
+]
+
+# Larger runners are named freely (e.g. "ubuntu-24.04-8-cores"), so they are
+# priced from the platform, architecture and core count in the label. The
+# published rates do not scale linearly with cores, hence the tables; a core
+# count that is not published stays unpriced rather than extrapolated.
+_LARGER_RUNNER_PRICES: dict[tuple[str, str], dict[int, float]] = {
+    ("linux", "x64"): {2: 0.006, 4: 0.012, 8: 0.022, 16: 0.042, 32: 0.082, 64: 0.162, 96: 0.252},
+    ("windows", "x64"): {4: 0.022, 8: 0.042, 16: 0.082, 32: 0.162, 64: 0.322, 96: 0.552},
+    ("linux", "arm64"): {2: 0.005, 4: 0.008, 8: 0.014, 16: 0.026, 32: 0.050, 64: 0.098},
+    ("windows", "arm64"): {2: 0.008, 4: 0.014, 8: 0.026, 16: 0.050, 32: 0.098, 64: 0.194},
 }
 
-_CORES_PATTERN = re.compile(r'(\d+)[-_ ]?cores?\b', re.IGNORECASE)
+_CORES_PATTERN = re.compile(r"(\d+)[-_ ]?cores?\b", re.IGNORECASE)
 
 # A self-hosted runner costs the user nothing on GitHub's bill.
 SELF_HOSTED_LABELS = frozenset({"self-hosted", "selfhosted"})
@@ -56,14 +64,16 @@ class PricingTable:
     """Maps runner labels to a USD-per-minute rate.
 
     Attributes:
-        prices: Runner label (lowercased) to USD per minute
-        source: Where the table came from, for the report
+        prices: Runner label (lowercased) to USD per minute; checked before
+            the label families and larger-runner tables, so a file can
+            override any of them
+        source: Where the rates came from, for the report
     """
 
     prices: dict[str, float] = field(
         default_factory=lambda: dict(DEFAULT_PRICES_USD_PER_MINUTE)
     )
-    source: str = "built-in defaults"
+    source: str = f"GitHub list prices as of {PRICES_AS_OF}"
     # Resolved rates by runner string: an analysis asks once per step
     # execution, for a handful of distinct runners
     _resolved: dict[str | None, float | None] = field(
@@ -99,23 +109,33 @@ class PricingTable:
                 return self.prices[label]
 
         for label in labels:
-            derived = self._price_from_core_count(label)
+            for pattern, price in _LABEL_FAMILIES:
+                if pattern.match(label):
+                    return price
+
+        for label in labels:
+            derived = _price_from_core_count(label)
             if derived is not None:
                 return derived
 
         return None
 
-    def _price_from_core_count(self, label: str) -> float | None:
-        """Derive a larger runner's price from its core count."""
-        cores_match = _CORES_PATTERN.search(label)
-        if not cores_match:
-            return None
 
-        for platform, per_core in _PRICE_PER_CORE.items():
-            if platform in label:
-                return int(cores_match.group(1)) * per_core
-
+def _price_from_core_count(label: str) -> float | None:
+    """Price a larger runner from the platform and core count in its label."""
+    cores_match = _CORES_PATTERN.search(label)
+    if not cores_match:
         return None
+
+    if "windows" in label:
+        platform = "windows"
+    elif "ubuntu" in label or "linux" in label:
+        platform = "linux"
+    else:
+        return None
+
+    architecture = "arm64" if "arm" in label else "x64"
+    return _LARGER_RUNNER_PRICES[(platform, architecture)].get(int(cores_match.group(1)))
 
 
 def load_pricing(path: str | Path) -> PricingTable:
@@ -123,13 +143,13 @@ def load_pricing(path: str | Path) -> PricingTable:
 
     The file maps runner labels to USD per minute:
 
-        {"ubuntu-latest": 0.008, "my-big-runner": 0.032}
+        {"ubuntu-latest": 0.006, "my-big-runner": 0.032}
 
     Args:
         path: Path to the JSON file
 
     Returns:
-        PricingTable with the file's rates merged over the defaults
+        PricingTable with the file's rates taking precedence over the defaults
 
     Raises:
         ValueError: If the file is not a JSON object of non-negative numbers
@@ -158,7 +178,7 @@ def load_pricing(path: str | Path) -> PricingTable:
 
 
 def job_cost(duration_seconds: float | None, price_per_minute: float | None) -> float | None:
-    """Cost of one job, rounding up to the next whole minute as GitHub does.
+    """Cost of one job, its duration rounded up to a whole minute.
 
     Returns None when either the duration or the rate is unknown.
     """
@@ -174,7 +194,7 @@ def attributed_cost(duration_seconds: float | None, price_per_minute: float | No
     """Cost attributed to a step, without per-job rounding.
 
     Used to rank steps by spend. The sum over steps is therefore slightly
-    below the billed total, which includes GitHub's per-job rounding.
+    below the job total, which rounds each job up to a whole minute.
     """
     if duration_seconds is None or price_per_minute is None:
         return None

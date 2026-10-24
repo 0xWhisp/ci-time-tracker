@@ -376,19 +376,37 @@ ci-time-tracker --github acme/web --run-id 39102310449 --comment   # post it
 
 ## Cost Estimates
 
-Costs are estimated from the runner each job ran on, using GitHub's published
-per-minute rates for **private repositories**, rounded up per job the way
-GitHub bills. Public repositories pay nothing for standard runners.
+Costs are estimated from the runner each job ran on, using GitHub's
+[list prices](https://docs.github.com/en/billing/reference/actions-runner-pricing)
+for **private repositories** as of October 2026, with each job rounded up to a
+whole minute. Public repositories pay nothing for standard GitHub-hosted
+runners; larger runners are billed for public repositories too.
 
+| Runner | USD per minute |
+|---|---:|
+| Linux 2-core (`ubuntu-*`) | 0.006 |
+| Linux 1-core (`ubuntu-slim`) | 0.002 |
+| Linux 2-core arm64 (`ubuntu-*-arm`) | 0.005 |
+| Windows 2-core, x64 or arm64 (`windows-*`) | 0.010 |
+| macOS 3/4-core (`macos-*`, `macos-*-intel`) | 0.062 |
+| macOS 12-core (`macos-*-large`) | 0.077 |
+| macOS 5-core M2 Pro (`macos-*-xlarge`) | 0.102 |
+
+- Versioned labels are recognized by family, so a new image such as
+  `ubuntu-26.04` or `macos-26` is priced without an update.
+- Larger runners with custom names are priced from the platform, architecture
+  and core count in the label (e.g. `ubuntu-24.04-8-cores`), using GitHub's
+  published rates. A core count GitHub does not publish stays unpriced.
 - Self-hosted runners cost `$0.00`.
-- Larger runners are priced from their core count (Linux `$0.004`/core/min,
-  Windows `$0.008`/core/min).
-- A runner with no known rate is reported under `unpriced_runners` instead of
-  being assumed free, so an incomplete estimate is never shown as complete.
+- Runners from other providers (Depot, Namespace, ...) and other custom names
+  have no known rate. They are listed under `unpriced_runners`, and the report
+  says how many jobs the estimate covers ("cost covers only 190 of 790 jobs"),
+  so a partial estimate is never shown as the whole cost.
 - Per-step costs are attributed proportionally and do not include the per-job
-  rounding, so they add up to slightly less than the billed total.
+  rounding, so they add up to slightly less than the job total.
 
-Rates change. Override them with a JSON file of label to USD per minute:
+Prices change. Override any label, including the families above, with a JSON
+file of label to USD per minute:
 
 ```bash
 ci-time-tracker --github acme/web --pricing pricing.json
@@ -396,7 +414,7 @@ ci-time-tracker --github acme/web --pricing pricing.json
 
 ```json
 {
-  "ubuntu-latest": 0.008,
+  "depot-ubuntu-24.04": 0.004,
   "our-big-runner": 0.032
 }
 ```

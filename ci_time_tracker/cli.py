@@ -357,6 +357,27 @@ def load_estimates(path: str) -> dict[str, float]:
     return estimates
 
 
+def _no_runs_message(args: argparse.Namespace) -> str:
+    """Explain an empty result, pointing at the default branch when it differs.
+
+    Repositories differ on main versus master, and an empty answer for the
+    wrong branch is otherwise indistinguishable from a repository without CI.
+    """
+    message = "No workflow runs found to analyze"
+    if not args.branch:
+        return message
+
+    message = f"No completed workflow runs found on branch '{args.branch}'"
+    try:
+        default = GitHubClient(repo=args.github, token=resolve_token()).fetch_default_branch()
+    except GitHubAPIError:
+        return message
+
+    if default and default != args.branch:
+        message += f". The repository's default branch is '{default}'"
+    return message
+
+
 def _run_impact(args: argparse.Namespace, pricing: Any) -> int:
     """Compare one run with its baseline, and optionally comment on its PR.
 
@@ -582,7 +603,7 @@ def main() -> int:
                     cache.close()
 
             if not logs:
-                print("Error: No workflow runs found to analyze", file=sys.stderr)
+                print(f"Error: {_no_runs_message(args)}", file=sys.stderr)
                 return 1
 
             # Analyze

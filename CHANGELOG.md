@@ -16,8 +16,11 @@ replaces it.
   `--cache-path`), jobs are fetched concurrently, and the earlier attempts of
   re-run workflows are fetched too.
 - **Consumed time, cost and queue time**: steps ranked by the time they consume,
-  cost per runner with GitHub's per-job rounding (`--pricing` overrides the
-  rates), queue time p50/p90, and median and p90 build duration.
+  cost per runner at GitHub's list prices as of October 2026 (`--pricing`
+  overrides them), queue time p50/p90, and median and p90 build duration.
+  Runner label families (`ubuntu-*`, `macos-*-intel`, `*-arm`, ...) and larger
+  runners are priced; when some runners have no known rate, the report says
+  how many jobs the estimate covers.
 - `--group-matrix` to merge the legs of matrix jobs, and `--top N` to limit the
   step table.
 - **Flaky detection by commit**: a step is flaky when it both failed and passed
@@ -58,5 +61,7 @@ replaces it.
   regular expression, and section names containing `-` or `.` were not
   matched.
 - A crash on Windows when output was redirected to a file or pipe.
+- An empty result for `--branch` now names the repository's default branch
+  when it differs (`main` versus `master`).
 
 [0.2.0]: https://github.com/0xWhisp/ci-time-tracker/releases/tag/v0.2.0
