@@ -1,6 +1,7 @@
 # ci-time-tracker
 
 [![CI](https://github.com/0xWhisp/ci-time-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/0xWhisp/ci-time-tracker/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/ci-time-tracker)](https://pypi.org/project/ci-time-tracker/)
 
 Find where your CI time and money go. ci-time-tracker reads your GitHub Actions
 history and reports the steps that cost the most, the ones that are flaky, and
@@ -23,7 +24,13 @@ comments on each pull request with how it changes CI time and cost.
 
 ## Installation
 
-Requires Python 3.10+. Not yet published on PyPI; install from source:
+Requires Python 3.10+.
+
+```bash
+pip install ci-time-tracker
+```
+
+Or from source:
 
 ```bash
 git clone https://github.com/0xWhisp/ci-time-tracker.git
@@ -265,7 +272,7 @@ consumers, and the full step table collapsed.
 ```yaml
 - name: CI time report
   run: |
-    pip install git+https://github.com/0xWhisp/ci-time-tracker.git
+    pip install ci-time-tracker
     ci-time-tracker --github ${{ github.repository }} --workflow ci.yml       --last 100 --group-matrix --format markdown >> "$GITHUB_STEP_SUMMARY"
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -338,7 +345,7 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: 0xWhisp/ci-time-tracker@main   # pin a release tag once published
+      - uses: 0xWhisp/ci-time-tracker@v0.2.0
 ```
 
 `workflow_run` runs the copy of the workflow on the default branch with the
