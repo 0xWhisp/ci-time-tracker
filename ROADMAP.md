@@ -11,7 +11,7 @@ Esfuerzo: **S** ≤ 1 día · **M** 2–3 días · **L** 4–6 días
 | 3 | Métricas accionables: tiempo total, costo estimado, tiempo en cola | S | Alto | ★★★★☆ | 2 | ✅ Hecha |
 | 4 | Flaky real (mismo commit / reintentos) y detección de regresiones | M | Alto | ★★★★☆ | 2 | ✅ Hecha |
 | 5 | Salida Markdown (`$GITHUB_STEP_SUMMARY`) y umbrales `--fail-on` | S | Medio | ★★★★☆ | 3, 4 | ✅ Hecha |
-| 6 | CI propio, publicación en PyPI y README con demo | S | Medio | ★★★★☆ | 1–5 | 🟡 En curso |
+| 6 | CI propio, publicación en PyPI y README con demo | S | Medio | ★★★★☆ | 1–5 | ✅ Hecha (0.2.0 en PyPI) |
 | 7 | GitHub Action que comenta en PRs el impacto en tiempos | M | Alto | ★★★☆☆ | 5, 6 | ✅ Hecha (falta Marketplace) |
 | 8 | Recomendaciones cruzando config y datos reales | L | Alto (diferenciador) | ★★★☆☆ | 2, 3 | ⬜ Pendiente |
 | 9 | Proveedores GitLab y CircleCI por API + registro extensible | M c/u | Medio | ★★☆☆☆ | 2 | ⬜ Pendiente |
@@ -119,8 +119,9 @@ UTF-8. Ahora la salida es siempre UTF-8, con un test que simula ese stdout.
       `__version__` coincidan y que pasen los tests antes de publicar.
 - [x] Demo en vivo: el CI corre la herramienta sobre su propio historial y deja el reporte
       Markdown en la página de resumen de cada run. Badge de CI en el README.
-- [ ] **Publicar en PyPI** — requiere configurar el trusted publisher en la cuenta de PyPI
-      y crear el environment `pypi` en GitHub (pasos en el README, "Releasing").
+- [x] **Publicado en PyPI:** [`ci-time-tracker` 0.2.0](https://pypi.org/project/ci-time-tracker/0.2.0/),
+      vía trusted publishing desde el tag `v0.2.0`. Verificado instalando en un entorno limpio
+      y analizando el CI real del repo.
 - [x] Lint con ruff: reglas fijadas en `pyproject.toml` (errores, bugbear, orden de imports,
       sintaxis moderna) y job en el CI. 35 hallazgos corregidos; los relevantes: 8 excepciones
       re-lanzadas sin su causa y un patrón de CircleCI definido pero nunca usado.
