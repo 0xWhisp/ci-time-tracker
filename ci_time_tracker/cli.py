@@ -7,6 +7,7 @@ parsing, file I/O, and orchestration of parsing, analysis, and reporting.
 import argparse
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from ci_time_tracker.detection import DEFAULT_REGRESSION_THRESHOLD
 from ci_time_tracker.gates import GATE_CHOICES, evaluate_gates, evaluate_impact_gates
 from ci_time_tracker.github_api import (
     DEFAULT_RUN_LIMIT,
+    DEFAULT_WORKERS,
     GitHubAPIError,
     GitHubClient,
     fetch_build_logs,
@@ -394,18 +396,26 @@ def _fetch_workflows(repo: str, logs: list[Any]) -> dict[str, dict[str, Any]]:
         if str(log.metadata.get("workflow_path") or "").startswith(".github/workflows/")
     })[:_MAX_WORKFLOW_FILES]
 
-    client = GitHubClient(repo=repo, token=resolve_token())
-    workflows: dict[str, dict[str, Any]] = {}
+    if not paths:
+        return {}
 
-    for path in paths:
+    client = GitHubClient(repo=repo, token=resolve_token())
+
+    def fetch(path: str) -> tuple[str, str | None]:
         try:
-            text = client.fetch_workflow_file(path)
+            return path, client.fetch_workflow_file(path)
         except GitHubAPIError as e:
             print(f"Warning: could not read {path} ({e}); skipping its recommendations", file=sys.stderr)
-            continue
-        parsed = parse_workflow(text) if text else None
-        if parsed is not None:
-            workflows[path] = parsed
+            return path, None
+
+    # Fetched concurrently: these requests are not cached, and one after the
+    # other they added over a second to a cached analysis
+    workflows: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=min(DEFAULT_WORKERS, len(paths))) as pool:
+        for path, text in pool.map(fetch, paths):
+            parsed = parse_workflow(text) if text else None
+            if parsed is not None:
+                workflows[path] = parsed
 
     return workflows
 
