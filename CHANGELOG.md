@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **HTML report** (`--format html`): one self-contained page with summary
+  cards, build duration over time per workflow, issues, recommendations and
+  where the time goes. No scripts or external requests; light and dark mode.
+- `timeline` in the JSON output: one entry per build with its time,
+  duration, outcome, commit, workflow and run URL.
 - **Recommendations** in `--github` mode, crossing each workflow's
   configuration with its run history: cache slow, uncached dependency
   installs; cancel superseded pull request runs; run Windows or macOS matrix

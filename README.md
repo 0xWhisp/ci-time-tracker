@@ -371,6 +371,31 @@ ci-time-tracker --github acme/web --run-id 39102310449 --group-matrix
 ci-time-tracker --github acme/web --run-id 39102310449 --comment   # post it
 ```
 
+### HTML report
+
+`--format html` writes a single self-contained page: summary cards, build
+duration over time for each of the busiest workflows (failures marked, a
+rolling median, outliers kept from flattening the chart), issues with their
+evidence, recommendations, and where the time goes. It has no scripts and loads
+nothing from elsewhere, so it opens offline and can be attached to an issue or
+kept as a CI artifact. It follows the viewer's light or dark mode.
+
+```bash
+ci-time-tracker --github acme/web --group-matrix --format html --output ci-report.html
+```
+
+```yaml
+- run: ci-time-tracker --github ${{ github.repository }} --format html --output ci-report.html
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+- uses: actions/upload-artifact@v4
+  with:
+    name: ci-report
+    path: ci-report.html
+```
+
+The JSON output carries the same per-build data under `timeline`.
+
 ### Exit codes
 
 | Code | Meaning |
