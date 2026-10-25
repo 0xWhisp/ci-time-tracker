@@ -350,10 +350,32 @@ def analyze_logs(
         mode="log",
         steps=step_stats,
         total_estimated_duration=None,
+        timeline=build_timeline(logs),
         regressed_steps=[stats.name for stats in step_stats if stats.is_regression],
         flaky_steps=[stats.name for stats in step_stats if stats.is_flaky],
         metadata=metadata,
     )
+
+
+def build_timeline(logs: list[BuildLog]) -> list[dict[str, Any]]:
+    """One entry per build, in the given order, for trend charts.
+
+    Earlier attempts of re-runs are left out: they are part of the same build.
+    """
+    return [
+        {
+            "build_id": log.build_id,
+            "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+            "duration": log.total_duration,
+            "conclusion": log.conclusion,
+            "head_sha": log.head_sha[:7] if log.head_sha else None,
+            "workflow": log.metadata.get("workflow_name"),
+            "branch": log.metadata.get("branch"),
+            "url": log.metadata.get("url"),
+        }
+        for log in logs
+        if not log.metadata.get("superseded_attempt")
+    ]
 
 
 def aggregate_job_metrics(

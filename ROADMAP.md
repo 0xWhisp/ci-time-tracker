@@ -15,7 +15,7 @@ Esfuerzo: **S** ≤ 1 día · **M** 2–3 días · **L** 4–6 días
 | 7 | GitHub Action que comenta en PRs el impacto en tiempos | M | Alto | ★★★☆☆ | 5, 6 | ✅ Hecha (falta Marketplace) |
 | 8 | Recomendaciones cruzando config y datos reales | L | Alto (diferenciador) | ★★★☆☆ | 2, 3 | ✅ Hecha |
 | 9 | Proveedores GitLab y CircleCI por API + registro extensible | M c/u | Medio | ★★☆☆☆ | 2 | ⬜ Pendiente |
-| 10 | Reporte HTML con gráficos de tendencia | M | Medio | ★★☆☆☆ | 3, 4 | ⬜ Pendiente |
+| 10 | Reporte HTML con gráficos de tendencia | M | Medio | ★★☆☆☆ | 3, 4 | ✅ Hecha |
 
 **Punto de validación:** después de la tarea 6, publicar y recoger feedback de usuarios reales
 antes de invertir en 8–10.
@@ -181,4 +181,13 @@ cómputo, sin fallos propios en 79 builds), cpython y este repo. Calibró tres c
 
 ## 10. Reporte HTML
 
-- Página estática autocontenida con tendencias por paso, top de costo y flaky.
+- [x] `--format html`: una sola página, sin scripts ni recursos externos, modo claro/oscuro.
+      Tarjetas de resumen, duración de builds por workflow (fallos marcados, mediana móvil),
+      issues con evidencia y enlace al primer build lento, recomendaciones y dónde va el tiempo.
+- [x] `timeline` por build en el JSON.
+
+**Revisado renderizado** (pytest, 100 builds), lo que corrigió tres cosas que los tests no veían:
+un build colgado de 3 h 19 m aplastaba la escala (ahora el eje se ajusta al p95 y los outliers
+van como ▲ con su valor); los workflows mezclados en una línea hacían zigzag (ahora un gráfico
+por workflow); y la mediana de build de la tarjeta mezclaba 26 workflows sin decirlo. Los tests
+encontraron además un percentil mal calculado con pocos builds.
