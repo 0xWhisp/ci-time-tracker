@@ -374,13 +374,47 @@ ci-time-tracker --github acme/web --run-id 39102310449 --comment   # post it
 | 3 | GitHub API error (rate limit, permissions, not found) |
 | 4 | A quality gate failed |
 
+## Recommendations
+
+With `--github`, ci-time-tracker also reads the workflow files behind the runs
+and suggests changes where the configuration shows a cause and the history
+shows it matters. Neither is enough alone: a slow install step may already be
+cached, and a job without a cache may install in two seconds.
+
+| Recommendation | When |
+|---|---|
+| **Cache dependencies** | A job installs dependencies (pip, uv, poetry, npm, pnpm, yarn, bundler, composer, go) without any cache, and the install takes a median of 20s or more |
+| **Cancel superseded pull request runs** | Pull request runs kept running after a newer push to the same branch started another run, and the workflow has no `concurrency` with `cancel-in-progress` |
+| **Run expensive matrix legs less often** | Over at least 10 builds, the Windows or macOS legs of a job never failed when its Linux legs passed |
+
+Each one comes with its evidence, a concrete change, and what is at stake: the
+time (and cost) the affected steps or jobs used over the analyzed runs. That is
+an upper bound on the saving, not a promise of it. Findings with less than
+10 minutes at stake are left out, so the list stays worth reading.
+
+For example, on pytest-dev/pytest:
+
+```
+RECOMMENDATIONS
+  1. Run the Windows legs of `build` less often (.github/workflows/test.yml)
+     In 79 builds, the Windows legs never failed when the Linux legs passed. They used 68h 08m, 40% of the job's compute.
+     Suggestion: Run the Windows legs only on pushes to the default branch or on a schedule, and keep Linux on pull requests. A platform-specific failure then shows up after merging rather than before.
+     At stake: 68h 08m
+```
+
+Whether a job could start earlier (a `needs` that only orders jobs) is not
+suggested: the configuration cannot tell an ordering from a real dependency on
+the other job's results.
+
 ## Cost Estimates
 
 Costs are estimated from the runner each job ran on, using GitHub's
 [list prices](https://docs.github.com/en/billing/reference/actions-runner-pricing)
 for **private repositories** as of October 2026, with each job rounded up to a
 whole minute. Public repositories pay nothing for standard GitHub-hosted
-runners; larger runners are billed for public repositories too.
+runners; larger runners are billed for public repositories too. When the
+analyzed repository is public (the runs say so), standard runners are priced
+at `$0`, so the estimate counts only what is actually billed.
 
 | Runner | USD per minute |
 |---|---:|

@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Recommendations** in `--github` mode, crossing each workflow's
+  configuration with its run history: cache slow, uncached dependency
+  installs; cancel superseded pull request runs; run Windows or macOS matrix
+  legs less often when they never fail alone. Each comes with its evidence, a
+  concrete change and the time and cost at stake, in text, Markdown and JSON.
+
+### Changed
+
+- For a public repository, standard runners are priced at `$0`, as GitHub
+  bills them; larger runners keep their list price.
+- `--estimates` is deprecated; durations measured from real runs replace it.
+
+### Fixed
+
+- Transient GitHub errors (5xx, network, secondary rate limits) are retried
+  instead of failing the whole analysis.
+- Runs with so many jobs that GitHub times out serving a page of 100 are
+  fetched in smaller pages; a run GitHub still cannot serve is left out with
+  a warning instead of stopping the analysis.
+
 ## [0.2.0] - 2026-10-24
 
 First published release. Version 0.1.0 was never published; this release

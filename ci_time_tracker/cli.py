@@ -7,6 +7,7 @@ parsing, file I/O, and orchestration of parsing, analysis, and reporting.
 import argparse
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,8 @@ from ci_time_tracker.github_api import (
 )
 from ci_time_tracker.impact import compare_run, format_impact_markdown
 from ci_time_tracker.log_parser import parse_log
-from ci_time_tracker.pricing import load_pricing
+from ci_time_tracker.pricing import PricingTable, load_pricing
+from ci_time_tracker.recommendations import parse_workflow, recommend
 from ci_time_tracker.reporter import (
     format_json,
     format_markdown,
@@ -357,6 +359,57 @@ def load_estimates(path: str) -> dict[str, float]:
     return estimates
 
 
+def _visibility_pricing(logs: list[Any], pricing: Any) -> tuple[PricingTable, str | None]:
+    """Pricing for the repository's visibility, read from its runs.
+
+    Public repositories pay nothing for standard GitHub-hosted runners. When
+    the runs do not say, list prices are kept and no visibility is claimed.
+    """
+    pricing = pricing or PricingTable()
+    private = next(
+        (log.metadata["repository_private"] for log in logs if log.metadata.get("repository_private") is not None),
+        None,
+    )
+
+    if private is False:
+        return replace(pricing, public_repository=True), "public"
+    if private is True:
+        return pricing, "private"
+    return pricing, None
+
+
+# Most distinct workflow files fetched to cross with the history
+_MAX_WORKFLOW_FILES = 20
+
+
+def _fetch_workflows(repo: str, logs: list[Any]) -> dict[str, dict[str, Any]]:
+    """Fetch and parse the workflow files behind the analyzed runs.
+
+    Recommendations that need a workflow's configuration skip the ones that
+    cannot be read, so a failure here only narrows what is recommended.
+    """
+    paths = sorted({
+        log.metadata["workflow_path"]
+        for log in logs
+        if str(log.metadata.get("workflow_path") or "").startswith(".github/workflows/")
+    })[:_MAX_WORKFLOW_FILES]
+
+    client = GitHubClient(repo=repo, token=resolve_token())
+    workflows: dict[str, dict[str, Any]] = {}
+
+    for path in paths:
+        try:
+            text = client.fetch_workflow_file(path)
+        except GitHubAPIError as e:
+            print(f"Warning: could not read {path} ({e}); skipping its recommendations", file=sys.stderr)
+            continue
+        parsed = parse_workflow(text) if text else None
+        if parsed is not None:
+            workflows[path] = parsed
+
+    return workflows
+
+
 def _no_runs_message(args: argparse.Namespace) -> str:
     """Explain an empty result, pointing at the default branch when it differs.
 
@@ -406,6 +459,7 @@ def _run_impact(args: argparse.Namespace, pricing: Any) -> int:
         if cache is not None:
             cache.close()
 
+    pricing, _ = _visibility_pricing(run_logs, pricing)
     impact = compare_run(
         run_logs,
         baseline,
@@ -511,6 +565,11 @@ def main() -> int:
             # Load estimates if provided
             estimates = None
             if args.estimates:
+                print(
+                    "Warning: --estimates is deprecated and will be removed: use --github "
+                    "for durations measured from real runs",
+                    file=sys.stderr,
+                )
                 try:
                     estimates = load_estimates(args.estimates)
                 except (OSError, FileNotFoundError) as e:
@@ -587,6 +646,7 @@ def main() -> int:
                 except Exception as e:
                     print(f"Warning: run cache unavailable ({e})", file=sys.stderr)
 
+            skipped: list[str] = []
             try:
                 logs = fetch_build_logs(
                     repo=args.github,
@@ -594,6 +654,7 @@ def main() -> int:
                     branch=args.branch,
                     limit=args.last,
                     cache=cache,
+                    skipped=skipped,
                 )
             except GitHubAPIError as e:
                 print(f"Error: {e}", file=sys.stderr)
@@ -607,12 +668,25 @@ def main() -> int:
                 return 1
 
             # Analyze
+            pricing, visibility = _visibility_pricing(logs, pricing)
             result = analyze_logs(
                 logs,
                 pricing,
                 args.group_matrix,
                 regression_threshold=args.regression_threshold,
             )
+            if visibility:
+                result.metadata["repository_visibility"] = visibility
+            if skipped:
+                result.metadata["skipped_runs"] = len(skipped)
+                print(
+                    f"Warning: left out {len(skipped)} run(s) GitHub failed to return: "
+                    f"{', '.join(skipped[:5])}",
+                    file=sys.stderr,
+                )
+            result.recommendations = [
+                item.to_dict() for item in recommend(logs, _fetch_workflows(args.github, logs), pricing)
+            ]
 
         else:
             # Should never reach here due to argparse

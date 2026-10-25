@@ -127,6 +127,7 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
         summary=summary,
         steps=steps_data,
         issues=issues,
+        recommendations=list(result.recommendations),
     )
 
 
@@ -222,6 +223,37 @@ def _rank_consumers(steps: list[dict[str, Any]]) -> list[tuple[dict[str, Any], s
         (step, f"{step['total_duration'] / total * 100:.1f}%" if total else "N/A")
         for step in consumers
     ]
+
+
+_AT_STAKE_NOTE = (
+    "at stake is what the affected steps or jobs used in the analyzed runs: "
+    "an upper bound on the saving"
+)
+
+
+def _at_stake(item: dict[str, Any]) -> str:
+    stake = format_duration(item.get("time_at_stake_seconds"))
+    if item.get("cost_at_stake_usd"):
+        stake += f", {format_cost(item['cost_at_stake_usd'])}"
+    return stake
+
+
+def _format_recommendations(recommendations: list[dict[str, Any]], width: int) -> list[str]:
+    """Text section with each suggested change, its evidence and what is at stake."""
+    if not recommendations:
+        return []
+
+    lines = ["RECOMMENDATIONS", "-" * width]
+    for rank, item in enumerate(recommendations, start=1):
+        where = f" ({item['workflow']})" if item.get("workflow") else ""
+        lines.append(f"  {rank}. {item['title']}{where}")
+        lines.append(f"     {item['evidence']}")
+        suggestion = item["suggestion"].splitlines()
+        lines.append(f"     Suggestion: {suggestion[0]}")
+        lines += [f"       {line}" for line in suggestion[1:]]
+        lines.append(f"     At stake: {_at_stake(item)}")
+    lines += [f"  note: {_AT_STAKE_NOTE}", ""]
+    return lines
 
 
 def _format_top_consumers(steps: list[dict[str, Any]], width: int) -> list[str]:
@@ -338,10 +370,16 @@ def format_text(report: Report, top: int | None = None) -> str:
         lines.append(f"  {key}: {_format_summary_value(key, value)}")
     
     if report.summary.get("estimated_cost_usd") is not None:
-        lines.append(
-            "  note: cost at GitHub's private-repository list prices, each job rounded "
-            "up to a whole minute; public repos pay nothing for standard runners"
-        )
+        if report.summary.get("repository_visibility") == "public":
+            lines.append(
+                "  note: public repository, so standard runners are free; only larger runners "
+                "count, at GitHub's list prices, each job rounded up to a whole minute"
+            )
+        else:
+            lines.append(
+                "  note: cost at GitHub's private-repository list prices, each job rounded "
+                "up to a whole minute; public repos pay nothing for standard runners"
+            )
         coverage = cost_coverage(report.summary)
         if coverage:
             lines.append(f"  note: {coverage}")
@@ -350,6 +388,7 @@ def format_text(report: Report, top: int | None = None) -> str:
     # Where the time goes
     if report.mode == "log":
         lines.extend(_format_top_consumers(report.steps, width))
+        lines.extend(_format_recommendations(report.recommendations, width))
     
     # Issues
     if report.issues:
@@ -505,6 +544,22 @@ def format_markdown(report: Report, top: int | None = None) -> str:
                 )
             lines.append("")
 
+        if report.recommendations:
+            lines += ["### Recommendations", ""]
+            for rank, item in enumerate(report.recommendations, start=1):
+                where = f" · `{item['workflow']}`" if item.get("workflow") else ""
+                lines.append(f"{rank}. **{item['title']}**{where}  ")
+                lines.append(f"   {item['evidence']}  ")
+                suggestion = item["suggestion"].splitlines()
+                if len(suggestion) == 1:
+                    lines.append(f"   {suggestion[0]}  ")
+                else:
+                    lines.append(f"   {suggestion[0]}")
+                    lines += ["", "   ```yaml"] + [f"   {line}" for line in suggestion[1:]] + ["   ```", ""]
+                lines.append(f"   *At stake: {_at_stake(item)}.*")
+                lines.append("")
+            lines += [f"<sub>{_AT_STAKE_NOTE[0].upper()}{_AT_STAKE_NOTE[1:]}.</sub>", ""]
+
         shown = report.steps[:top] if top else report.steps
         lines += [
             f"<details><summary>All steps ({len(report.steps)})</summary>",
@@ -539,7 +594,10 @@ def format_markdown(report: Report, top: int | None = None) -> str:
                 f"≥{summary.get('regression_min_builds', '?')} builds"
             )
         if summary.get("estimated_cost_usd") is not None:
-            notes.append("cost at GitHub list prices for private repositories")
+            if summary.get("repository_visibility") == "public":
+                notes.append("public repository, so standard runners are free")
+            else:
+                notes.append("cost at GitHub list prices for private repositories")
         if notes:
             lines += [f"<sub>{'; '.join(notes)}.</sub>", ""]
 

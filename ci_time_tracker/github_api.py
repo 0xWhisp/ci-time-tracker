@@ -5,8 +5,10 @@ the BuildLog/StepExecution models. Timing comes from the API's own timestamps,
 so analysis does not depend on parsing runner log text.
 """
 
+import base64
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +29,11 @@ DEFAULT_RUN_LIMIT = 50
 DEFAULT_WORKERS = 8
 
 _PER_PAGE = 100
+
+# A run with many jobs, each with many steps, can make GitHub time out
+# building a 100-job page (502/504); such runs are paged in smaller pieces
+_SMALL_JOBS_PAGE = 30
+_TIMEOUT_STATUSES = frozenset({502, 504})
 _USER_AGENT = "ci-time-tracker"
 _API_VERSION = "2022-11-28"
 _TIMEOUT_SECONDS = 30
@@ -77,20 +84,63 @@ def resolve_token(explicit: str | None = None) -> str | None:
     return explicit or os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
 
 
+# Reads are retried on errors GitHub reports as transient: one 502 among
+# hundreds of jobs requests should not lose the whole analysis. Writes are not
+# retried, since retrying a POST whose response was lost could comment twice.
+_ATTEMPTS = 3
+_RETRY_BACKOFF_SECONDS = 1.0
+_MAX_RETRY_AFTER_SECONDS = 60.0
+_TRANSIENT_STATUSES = frozenset({500, 502, 503, 504})
+
+# Injectable so tests do not wait
+_sleep = time.sleep
+
+
+def _retry_delay(error: urllib.error.HTTPError, attempt: int) -> float | None:
+    """Seconds to wait before retrying, or None when the error is not transient."""
+    retry_after = error.headers.get("Retry-After") if error.headers else None
+
+    if error.code in (403, 429) and retry_after:
+        # Secondary rate limit: GitHub says when to come back
+        try:
+            delay = float(retry_after)
+        except ValueError:
+            return None
+        return delay if delay <= _MAX_RETRY_AFTER_SECONDS else None
+
+    if error.code in _TRANSIENT_STATUSES:
+        return _RETRY_BACKOFF_SECONDS * 2 ** attempt
+
+    return None
+
+
 def _urllib_transport(url: str, headers: dict[str, str]) -> tuple[Any, dict[str, str]]:
-    """Default transport: a plain GET against the GitHub REST API."""
+    """Default transport: a GET against the GitHub REST API.
+
+    Retried on server errors, network errors and secondary rate limits.
+    """
     request = urllib.request.Request(url, headers=headers)
 
-    try:
-        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
-            body = response.read().decode("utf-8")
-            return json.loads(body), dict(response.headers)
-    except urllib.error.HTTPError as error:
-        raise _http_error(error, url) from error
-    except urllib.error.URLError as error:
-        raise GitHubAPIError(f"Could not reach {url}: {error.reason}") from error
-    except json.JSONDecodeError as error:
-        raise GitHubAPIError(f"GitHub returned a non-JSON response for {url}") from error
+    for attempt in range(_ATTEMPTS):
+        last_attempt = attempt == _ATTEMPTS - 1
+        try:
+            with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
+                body = response.read().decode("utf-8")
+                return json.loads(body), dict(response.headers)
+        except urllib.error.HTTPError as error:
+            delay = None if last_attempt else _retry_delay(error, attempt)
+            if delay is None:
+                raise _http_error(error, url) from error
+            _sleep(delay)
+        except (urllib.error.URLError, TimeoutError) as error:
+            if last_attempt:
+                reason = getattr(error, "reason", error)
+                raise GitHubAPIError(f"Could not reach {url}: {reason}") from error
+            _sleep(_RETRY_BACKOFF_SECONDS * 2 ** attempt)
+        except json.JSONDecodeError as error:
+            raise GitHubAPIError(f"GitHub returned a non-JSON response for {url}") from error
+
+    raise AssertionError("unreachable: the last attempt returns or raises")
 
 
 def _urllib_send(
@@ -198,6 +248,23 @@ class GitHubClient:
     def fetch_run(self, run_id: int | str) -> dict[str, Any]:
         """Return one workflow run's payload (its latest attempt)."""
         return self._get(f"/repos/{self.repo}/actions/runs/{run_id}")
+
+    def fetch_workflow_file(self, path: str, ref: str | None = None) -> str | None:
+        """Return a workflow file's YAML, or None when it does not exist.
+
+        Workflows GitHub generates itself (Dependabot, default CodeQL setup)
+        have no file and also return None.
+        """
+        try:
+            payload = self._get(f"/repos/{self.repo}/contents/{urllib.parse.quote(path)}", {"ref": ref})
+        except GitHubAPIError as error:
+            if error.status == 404:
+                return None
+            raise
+
+        if not isinstance(payload, dict) or payload.get("encoding") != "base64":
+            return None
+        return base64.b64decode(payload.get("content") or "").decode("utf-8", errors="replace")
 
     def fetch_default_branch(self) -> str:
         """Return the repository's default branch."""
@@ -307,21 +374,31 @@ class GitHubClient:
 
         Without an attempt, GitHub returns the jobs of the latest attempt, so
         an earlier attempt of a re-run must always be asked for explicitly.
+        When GitHub times out building a page of a very large run, the jobs
+        are fetched again in smaller pages.
         """
         if run_attempt:
             path = f"/repos/{self.repo}/actions/runs/{run_id}/attempts/{run_attempt}/jobs"
         else:
             path = f"/repos/{self.repo}/actions/runs/{run_id}/jobs"
 
+        try:
+            return self._fetch_jobs(path, _PER_PAGE)
+        except GitHubAPIError as error:
+            if error.status not in _TIMEOUT_STATUSES:
+                raise
+            return self._fetch_jobs(path, _SMALL_JOBS_PAGE)
+
+    def _fetch_jobs(self, path: str, per_page: int) -> list[dict[str, Any]]:
         jobs: list[dict[str, Any]] = []
         page = 1
 
         while True:
-            payload = self._get(path, {"per_page": _PER_PAGE, "page": page})
+            payload = self._get(path, {"per_page": per_page, "page": page})
             batch = payload.get("jobs", []) if isinstance(payload, dict) else []
             jobs.extend(batch)
 
-            if len(batch) < _PER_PAGE:
+            if len(batch) < per_page:
                 return jobs
             page += 1
 
@@ -448,6 +525,12 @@ def build_log_from_run(
             "branch": run.get("head_branch"),
             "event": run.get("event"),
             "url": run.get("html_url"),
+            # Where the workflow lives (".github/workflows/ci.yml"), and the
+            # repository the commit came from, which differs for forks
+            "workflow_path": run.get("path"),
+            "head_repository": (run.get("head_repository") or {}).get("full_name"),
+            # Public repositories pay nothing for standard runners
+            "repository_private": (run.get("repository") or {}).get("private"),
             "jobs": jobs_metadata,
             "superseded_attempt": superseded,
         },
@@ -482,6 +565,7 @@ def fetch_build_logs(
     transport: Transport = _urllib_transport,
     workers: int = DEFAULT_WORKERS,
     include_attempts: bool = True,
+    skipped: list[str] | None = None,
 ) -> list[BuildLog]:
     """Fetch recent workflow runs and return them as BuildLogs.
 
@@ -504,6 +588,8 @@ def fetch_build_logs(
         api_url: API root, overridable for GitHub Enterprise
         transport: Injectable request function
         workers: Number of concurrent jobs requests
+        skipped: When given, receives the ids of runs left out because
+            GitHub kept failing to return their jobs (a server error)
         include_attempts: Also fetch the earlier attempts of re-run runs;
             they do not count towards `limit`
 
@@ -548,12 +634,25 @@ def fetch_build_logs(
             jobs_by_attempt[(run["id"], attempt)] = cached
 
     if missing:
-        def fetch(entry: tuple[dict[str, Any], int]) -> tuple[dict[str, Any], int, list[dict[str, Any]]]:
+        def fetch(
+            entry: tuple[dict[str, Any], int],
+        ) -> tuple[dict[str, Any], int, list[dict[str, Any]] | None]:
             run, attempt = entry
-            return run, attempt, client.fetch_run_jobs(run["id"], attempt)
+            try:
+                return run, attempt, client.fetch_run_jobs(run["id"], attempt)
+            except GitHubAPIError as error:
+                # One run GitHub cannot serve should not lose the whole
+                # analysis; access and rate-limit errors still stop it
+                if error.status is not None and error.status >= 500:
+                    return run, attempt, None
+                raise
 
         with ThreadPoolExecutor(max_workers=max(1, min(workers, len(missing)))) as pool:
             for run, attempt, jobs in pool.map(fetch, missing):
+                if jobs is None:
+                    if skipped is not None:
+                        skipped.append(f"{run['id']}" + (f" (attempt {attempt})" if attempt > 1 else ""))
+                    continue
                 jobs_by_attempt[(run["id"], attempt)] = jobs
                 # Only completed runs are worth caching: an in-flight run's
                 # timings still change.
@@ -561,8 +660,9 @@ def fetch_build_logs(
                     cache.store_jobs(repo, run["id"], attempt, jobs)
 
     logs = [
-        build_log_from_run(run, jobs_by_attempt.get((run["id"], attempt), []), superseded)
+        build_log_from_run(run, jobs_by_attempt[(run["id"], attempt)], superseded)
         for run, attempt, superseded in attempts
+        if (run["id"], attempt) in jobs_by_attempt
     ]
     logs.reverse()
     return logs

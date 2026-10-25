@@ -13,7 +13,7 @@ Esfuerzo: **S** ≤ 1 día · **M** 2–3 días · **L** 4–6 días
 | 5 | Salida Markdown (`$GITHUB_STEP_SUMMARY`) y umbrales `--fail-on` | S | Medio | ★★★★☆ | 3, 4 | ✅ Hecha |
 | 6 | CI propio, publicación en PyPI y README con demo | S | Medio | ★★★★☆ | 1–5 | 🟡 En curso |
 | 7 | GitHub Action que comenta en PRs el impacto en tiempos | M | Alto | ★★★☆☆ | 5, 6 | ✅ Hecha (falta Marketplace) |
-| 8 | Recomendaciones cruzando config y datos reales | L | Alto (diferenciador) | ★★★☆☆ | 2, 3 | ⬜ Pendiente |
+| 8 | Recomendaciones cruzando config y datos reales | L | Alto (diferenciador) | ★★★☆☆ | 2, 3 | ✅ Hecha |
 | 9 | Proveedores GitLab y CircleCI por API + registro extensible | M c/u | Medio | ★★☆☆☆ | 2 | ⬜ Pendiente |
 | 10 | Reporte HTML con gráficos de tendencia | M | Medio | ★★☆☆☆ | 3, 4 | ⬜ Pendiente |
 
@@ -154,10 +154,25 @@ corta ahí (una petición menos por listado).
 
 ## 8. Recomendaciones config × datos
 
-- Detectar: dependencias sin caché cuando la instalación es lenta, jobs sin `needs` que podrían
-  paralelizarse, falta de `concurrency: cancel-in-progress`, matrices sobredimensionadas.
-- Cada recomendación con ahorro estimado en minutos/USD.
-- Deprecar el modo `--estimates` manual.
+- [x] Caché de dependencias: el job instala sin ninguna caché (la config lo muestra) **y** la
+      instalación tarda una mediana ≥20 s (los datos lo miden).
+- [x] Cancelar runs de PR obsoletos: el workflow no tiene `cancel-in-progress` y hubo runs que
+      siguieron corriendo después de que un push nuevo lanzó otro.
+- [x] Patas caras de la matriz: Windows/macOS que nunca fallaron cuando Linux pasó (≥10 builds).
+- [x] Cada recomendación con evidencia, cambio concreto y tiempo/costo en juego (techo del
+      ahorro, no promesa). Mínimo de 10 minutos en juego.
+- [x] `--estimates` deprecado.
+- [ ] Jobs paralelizables por `needs`: descartado. La config no distingue un `needs` que solo
+      ordena de uno que usa los resultados del otro job; el riesgo de recomendar mal es alto.
+
+**Prueba de campo** (7 repos, 100 runs, todas las ramas): pytest (patas de Windows: 68 h, 40% del
+cómputo, sin fallos propios en 79 builds), cpython y este repo. Calibró tres cosas:
+
+- Recomendaciones triviales (2,5 min en fastapi): mínimo de 10 minutos en juego.
+- El costo en repos públicos era engañoso ("$45 en juego" en pytest, que no paga): los runners
+  estándar pasan a $0 cuando los runs dicen que el repo es público.
+- uv no se podía analizar: un run de 120 jobs hace que GitHub corte por timeout (502 persistente)
+  con páginas de 100. Ahora se pagina más chico, y un run imposible se saltea con aviso.
 
 ## 9. GitLab y CircleCI por API
 
