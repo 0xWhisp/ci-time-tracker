@@ -31,16 +31,24 @@ DEFAULT_PRICES_USD_PER_MINUTE: dict[str, float] = {
 }
 
 # GitHub-hosted label families, most specific first, so that labels GitHub
-# adds later (ubuntu-26.04, macos-26-intel, ...) are priced without an update
-_LABEL_FAMILIES: list[tuple[re.Pattern[str], float]] = [
-    (re.compile(r"^ubuntu-(latest|\d+\.\d+)-arm$"), 0.005),  # Linux 2-core arm64
-    (re.compile(r"^ubuntu-(latest|\d+\.\d+)$"), 0.006),  # Linux 2-core x64
-    (re.compile(r"^windows-(latest|\d+)-arm$"), 0.010),  # Windows 2-core arm64
-    (re.compile(r"^windows-(latest|\d{4})$"), 0.010),  # Windows 2-core x64
-    (re.compile(r"^macos-(latest|\d+)-xlarge$"), 0.102),  # macOS 5-core M2 Pro
-    (re.compile(r"^macos-(latest|\d+)-large$"), 0.077),  # macOS 12-core Intel
-    (re.compile(r"^macos-(latest|\d+)(-intel)?$"), 0.062),  # macOS 3/4-core
+# adds later (ubuntu-26.04, macos-26-intel, ...) are priced without an update.
+# The flag marks standard runners, which are free for public repositories;
+# larger runners are billed for public repositories too.
+_LABEL_FAMILIES: list[tuple[re.Pattern[str], float, bool]] = [
+    (re.compile(r"^ubuntu-(latest|\d+\.\d+)-arm$"), 0.005, True),  # Linux 2-core arm64
+    (re.compile(r"^ubuntu-(latest|\d+\.\d+)$"), 0.006, True),  # Linux 2-core x64
+    (re.compile(r"^ubuntu-slim$"), 0.002, True),  # Linux 1-core
+    (re.compile(r"^windows-(latest|\d+)-arm$"), 0.010, True),  # Windows 2-core arm64
+    (re.compile(r"^windows-(latest|\d{4})$"), 0.010, True),  # Windows 2-core x64
+    (re.compile(r"^macos-(latest|\d+)-xlarge$"), 0.102, False),  # macOS 5-core M2 Pro
+    (re.compile(r"^macos-(latest|\d+)-large$"), 0.077, False),  # macOS 12-core Intel
+    (re.compile(r"^macos-(latest|\d+)(-intel)?$"), 0.062, True),  # macOS 3/4-core
 ]
+
+
+def _is_standard_runner(label: str) -> bool:
+    """Whether a label names a standard (not larger) GitHub-hosted runner."""
+    return any(standard and pattern.match(label) for pattern, _, standard in _LABEL_FAMILIES)
 
 # Larger runners are named freely (e.g. "ubuntu-24.04-8-cores"), so they are
 # priced from the platform, architecture and core count in the label. The
@@ -68,12 +76,18 @@ class PricingTable:
             the label families and larger-runner tables, so a file can
             override any of them
         source: Where the rates came from, for the report
+        overrides: Labels priced explicitly (by a pricing file); they win over
+            everything else, the public-repository rule included
+        public_repository: Price standard runners at zero, as GitHub does for
+            public repositories
     """
 
     prices: dict[str, float] = field(
         default_factory=lambda: dict(DEFAULT_PRICES_USD_PER_MINUTE)
     )
     source: str = f"GitHub list prices as of {PRICES_AS_OF}"
+    overrides: frozenset[str] = frozenset()
+    public_repository: bool = False
     # Resolved rates by runner string: an analysis asks once per step
     # execution, for a handful of distinct runners
     _resolved: dict[str | None, float | None] = field(
@@ -105,11 +119,18 @@ class PricingTable:
             return 0.0
 
         for label in labels:
+            if label in self.overrides:
+                return self.prices[label]
+
+        if self.public_repository and any(_is_standard_runner(label) for label in labels):
+            return 0.0
+
+        for label in labels:
             if label in self.prices:
                 return self.prices[label]
 
         for label in labels:
-            for pattern, price in _LABEL_FAMILIES:
+            for pattern, price, _ in _LABEL_FAMILIES:
                 if pattern.match(label):
                     return price
 
@@ -166,15 +187,18 @@ def load_pricing(path: str | Path) -> PricingTable:
         raise ValueError("Pricing file must contain a JSON object of label -> USD per minute")
 
     prices = dict(DEFAULT_PRICES_USD_PER_MINUTE)
+    overrides: set[str] = set()
 
     for label, price in data.items():
         if isinstance(price, bool) or not isinstance(price, (int, float)):
             raise ValueError(f"Price for '{label}' must be a number, got {type(price).__name__}")
         if price < 0:
             raise ValueError(f"Price for '{label}' cannot be negative")
-        prices[str(label).strip().lower()] = float(price)
+        key = str(label).strip().lower()
+        prices[key] = float(price)
+        overrides.add(key)
 
-    return PricingTable(prices=prices, source=str(path))
+    return PricingTable(prices=prices, source=str(path), overrides=frozenset(overrides))
 
 
 def job_cost(duration_seconds: float | None, price_per_minute: float | None) -> float | None:

@@ -207,6 +207,8 @@ class AnalysisResult:
         regressed_steps: Names of steps whose duration regressed
         flaky_steps: Names of steps flagged as flaky
         metadata: Additional analysis metadata
+        recommendations: Suggested changes, as dictionaries (see
+            recommendations.Recommendation)
     """
     mode: Literal["config", "log"]
     steps: list[StepStatistics] | list[PipelineStep] = field(default_factory=list)
@@ -214,6 +216,7 @@ class AnalysisResult:
     regressed_steps: list[str] = field(default_factory=list)
     flaky_steps: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    recommendations: list[dict[str, Any]] = field(default_factory=list)
 
     def validate(self) -> list[str]:
         """Validate the analysis result and return list of validation errors."""
@@ -243,6 +246,7 @@ class Report:
     summary: dict[str, Any] = field(default_factory=dict)
     steps: list[dict[str, Any]] = field(default_factory=list)
     issues: list[dict[str, Any]] = field(default_factory=list)
+    recommendations: list[dict[str, Any]] = field(default_factory=list)
 
     def validate(self) -> list[str]:
         """Validate the report and return list of validation errors."""
@@ -262,6 +266,7 @@ class Report:
             "summary": self.summary,
             "steps": self.steps,
             "issues": self.issues,
+            "recommendations": self.recommendations,
         }
 
     @classmethod
@@ -274,4 +279,5 @@ class Report:
             summary=data.get("summary", {}),
             steps=data.get("steps", []),
             issues=data.get("issues", []),
+            recommendations=data.get("recommendations", []),
         )
