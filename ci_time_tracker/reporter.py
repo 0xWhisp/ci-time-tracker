@@ -128,6 +128,7 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
         steps=steps_data,
         issues=issues,
         recommendations=list(result.recommendations),
+        timeline=list(result.timeline),
     )
 
 

@@ -209,6 +209,8 @@ class AnalysisResult:
         metadata: Additional analysis metadata
         recommendations: Suggested changes, as dictionaries (see
             recommendations.Recommendation)
+        timeline: One entry per build, oldest first: when it ran, how long
+            it took and how it ended
     """
     mode: Literal["config", "log"]
     steps: list[StepStatistics] | list[PipelineStep] = field(default_factory=list)
@@ -217,6 +219,7 @@ class AnalysisResult:
     flaky_steps: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     recommendations: list[dict[str, Any]] = field(default_factory=list)
+    timeline: list[dict[str, Any]] = field(default_factory=list)
 
     def validate(self) -> list[str]:
         """Validate the analysis result and return list of validation errors."""
@@ -247,6 +250,7 @@ class Report:
     steps: list[dict[str, Any]] = field(default_factory=list)
     issues: list[dict[str, Any]] = field(default_factory=list)
     recommendations: list[dict[str, Any]] = field(default_factory=list)
+    timeline: list[dict[str, Any]] = field(default_factory=list)
 
     def validate(self) -> list[str]:
         """Validate the report and return list of validation errors."""
@@ -267,6 +271,7 @@ class Report:
             "steps": self.steps,
             "issues": self.issues,
             "recommendations": self.recommendations,
+            "timeline": self.timeline,
         }
 
     @classmethod
@@ -280,4 +285,5 @@ class Report:
             steps=data.get("steps", []),
             issues=data.get("issues", []),
             recommendations=data.get("recommendations", []),
+            timeline=data.get("timeline", []),
         )
