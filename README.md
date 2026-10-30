@@ -535,6 +535,11 @@ needs at least **10 builds** to be judged; `regression_checked_steps` says how
 many had enough history. With `--group-matrix`, the legs of a build are
 combined into one sample (their median).
 
+When the analyzed runs span several branches, regressions are looked for on
+the repository's default branch only (`regression_branch`). Pull request
+branches run different code with different caches; mixed into one history
+they look like changes that never happened.
+
 ## Supported CI Providers
 
 | Provider | Config Format | Log Format |

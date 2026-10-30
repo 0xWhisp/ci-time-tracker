@@ -388,23 +388,46 @@ def recommend_expensive_matrix_legs(
                     stats[2] += job.get("duration_seconds") or 0.0
                     stats[3] += job_cost(job.get("duration_seconds"), pricing.price_for(job.get("runner"))) or 0.0
 
+    # One recommendation per workflow and platform: tokio's CI drew eighteen
+    # near-identical ones, one per job, when the finding is a single one
+    qualifying: dict[tuple[str, str], list[tuple[str, float, float, float]]] = defaultdict(list)
+    for (path, group, platform), (builds, alone, seconds, cost) in legs.items():
+        if builds >= MIN_LEG_BUILDS and not alone and seconds > 0:
+            qualifying[(path, platform)].append((group, builds, seconds, cost))
+
     recommendations: list[Recommendation] = []
 
-    for (path, group, platform), (builds, alone, seconds, cost) in legs.items():
-        if builds < MIN_LEG_BUILDS or alone or seconds < MIN_LEG_SECONDS:
+    for (path, platform), jobs in qualifying.items():
+        jobs.sort(key=lambda job: job[2], reverse=True)
+        seconds = sum(job[2] for job in jobs)
+        cost = sum(job[3] for job in jobs)
+        if seconds < MIN_LEG_SECONDS:
             continue
 
-        total = job_seconds[(path, group)]
-        share = f", {seconds / total * 100:.0f}% of the job's compute" if total else ""
+        builds = int(min(job[1] for job in jobs))
+        total = sum(job_seconds[(path, job[0])] for job in jobs)
         cost_str = f" and {format_cost(cost)}" if cost else ""
+
+        if len(jobs) == 1:
+            group = jobs[0][0]
+            title = f"Run the {platform} legs of `{group}` less often"
+            subject = f"the {platform} legs"
+            share = f", {seconds / total * 100:.0f}% of the job's compute" if total else ""
+        else:
+            group = None
+            names = ", ".join(f"`{job[0]}`" for job in jobs[:3])
+            more = f" and {len(jobs) - 3} more" if len(jobs) > 3 else ""
+            title = f"Run the {platform} legs of {len(jobs)} jobs less often"
+            subject = f"the {platform} legs of {names}{more}"
+            share = f", {seconds / total * 100:.0f}% of those jobs' compute" if total else ""
 
         recommendations.append(Recommendation(
             kind="expensive-matrix-legs",
-            title=f"Run the {platform} legs of `{group}` less often",
+            title=title,
             workflow=path,
             job=group,
             evidence=(
-                f"In {int(builds)} builds, the {platform} legs never failed when the Linux legs "
+                f"In {builds} builds, {subject} never failed when the Linux legs "
                 f"passed. They used {format_duration(seconds)}{cost_str}{share}."
             ),
             suggestion=(

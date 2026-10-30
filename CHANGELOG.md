@@ -21,6 +21,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Regressions are looked for on the default branch only when runs span
+  several branches. Mixing pull request builds into one history reported
+  regressions that never happened.
+- Matrix-leg recommendations are grouped per workflow and platform, instead
+  of one per job.
 - For a public repository, standard runners are priced at `$0`, as GitHub
   bills them; larger runners keep their list price.
 - `--estimates` is deprecated; durations measured from real runs replace it.

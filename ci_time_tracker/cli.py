@@ -362,6 +362,21 @@ def load_estimates(path: str) -> dict[str, float]:
     return estimates
 
 
+def _default_branch_if_mixed(repo: str, logs: list[Any]) -> str | None:
+    """The repository's default branch, when the runs span several branches.
+
+    Regressions are looked for on that branch only; with a single branch
+    there is nothing to choose and no request is made.
+    """
+    branches = {log.metadata.get("branch") for log in logs if log.metadata.get("branch")}
+    if len(branches) < 2:
+        return None
+    try:
+        return GitHubClient(repo=repo, token=resolve_token()).fetch_default_branch()
+    except (GitHubAPIError, KeyError, TypeError):
+        return None
+
+
 def _visibility_pricing(logs: list[Any], pricing: Any) -> tuple[PricingTable, str | None]:
     """Pricing for the repository's visibility, read from its runs.
 
@@ -685,6 +700,7 @@ def main() -> int:
                 pricing,
                 args.group_matrix,
                 regression_threshold=args.regression_threshold,
+                regression_branch=_default_branch_if_mixed(args.github, logs),
             )
             result.metadata["repository"] = args.github
             if visibility:

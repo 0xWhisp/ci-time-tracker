@@ -187,6 +187,12 @@ cómputo, sin fallos propios en 79 builds), cpython y este repo. Calibró tres c
       issues con evidencia y enlace al primer build lento, recomendaciones y dónde va el tiempo.
 - [x] `timeline` por build en el JSON.
 
+**Tercera prueba de campo** (TypeScript, react, tokio, prometheus, spring-boot, django, rubocop;
+100 runs, todas las ramas): las regresiones salían de mezclar builds de PRs con los de `main`
+(rubocop: 26 de `master` y 74 de PRs; TypeScript: 1 regresión mezclada, 0 en `main`). Ahora se
+buscan solo en la rama por defecto. tokio recibía 18 recomendaciones casi iguales, una por job;
+ahora es una por workflow y plataforma.
+
 **Revisado renderizado** (pytest, 100 builds), lo que corrigió tres cosas que los tests no veían:
 un build colgado de 3 h 19 m aplastaba la escala (ahora el eje se ajusta al p95 y los outliers
 van como ▲ con su valor); los workflows mezclados en una línea hacían zigzag (ahora un gráfico

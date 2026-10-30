@@ -408,9 +408,10 @@ def _footer(report: Report) -> str:
     elif summary.get("flaky_detection") == "failure-rate":
         notes.append("Flaky is judged by failure rate only (no commit data), which cannot tell flakiness from breakage.")
     if "regression_checked_steps" in summary:
+        on_branch = f" on {summary['regression_branch']}" if summary.get("regression_branch") else ""
         notes.append(
             f"Regressions were checked on {summary['regression_checked_steps']} steps with at least "
-            f"{summary.get('regression_min_builds', '?')} builds."
+            f"{summary.get('regression_min_builds', '?')} builds{on_branch}."
         )
 
     return "<footer>" + "".join(f"<p>{_e(note)}</p>" for note in notes) + "</footer>"
