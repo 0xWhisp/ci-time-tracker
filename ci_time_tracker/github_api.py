@@ -339,11 +339,15 @@ class GitHubClient:
         else:
             path = f"/repos/{self.repo}/actions/runs"
 
-        yielded = 0
-        page = 1
+        # The pages a limit needs are known up front, so they are requested
+        # together: listing is the slowest part of a cached analysis, at a few
+        # seconds a page. The pull requests attached to each run are left out
+        # of the payload; nothing reads them (a run's pull request is looked up
+        # by its commit).
+        per_page = min(_PER_PAGE, limit)
+        pages = -(-limit // per_page)
 
-        while yielded < limit:
-            per_page = min(_PER_PAGE, limit - yielded)
+        def fetch(page: int) -> list[dict[str, Any]]:
             payload = self._get(
                 path,
                 {
@@ -351,23 +355,32 @@ class GitHubClient:
                     "page": page,
                     "status": status,
                     "branch": branch,
+                    "exclude_pull_requests": "true",
                 },
             )
-            runs = payload.get("workflow_runs", []) if isinstance(payload, dict) else []
-            if not runs:
-                return
+            return payload.get("workflow_runs", []) if isinstance(payload, dict) else []
 
+        with ThreadPoolExecutor(max_workers=min(DEFAULT_WORKERS, pages)) as pool:
+            batches = list(pool.map(fetch, range(1, pages + 1)))
+
+        seen: set[Any] = set()
+        yielded = 0
+
+        for runs in batches:
             for run in runs:
+                # A run created while the pages were fetched shifts the others
+                # by one, which can show a run on two pages
+                if run.get("id") in seen:
+                    continue
+                seen.add(run.get("id"))
                 yield run
                 yielded += 1
                 if yielded >= limit:
                     return
 
-            # A short page is the last one; asking for the next would be wasted
+            # A short page is the last one; later pages can only be empty
             if len(runs) < per_page:
                 return
-
-            page += 1
 
     def fetch_run_jobs(self, run_id: int | str, run_attempt: int | None = None) -> list[dict[str, Any]]:
         """Return every job of a workflow run attempt, following pagination.
