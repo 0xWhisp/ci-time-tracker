@@ -273,12 +273,14 @@ class TestClientRequests:
             ("/jobs", JOBS),
             ("&page=1&", {"workflow_runs": first_page}),
             ("&page=2&", {"workflow_runs": second_page}),
+            ("&page=3&", {"workflow_runs": [{**RUN, "id": 3000}]}),
         ])
 
         logs = fetch_build_logs("acme/web", limit=50, transport=transport)
 
-        assert len(logs) == 49
-        assert len({log.build_id for log in logs}) == 49
+        # The duplicate is made up from the next page
+        assert len(logs) == 50
+        assert len({log.build_id for log in logs}) == 50
 
     @pytest.mark.parametrize(("limit", "per_page", "pages"), [
         (10, 10, 1),
@@ -296,6 +298,37 @@ class TestClientRequests:
         assert len(calls) == pages
         assert all(f"per_page={per_page}&" in url for url in calls)
 
+    def test_runs_that_never_ran_are_left_out(self):
+        """Awaiting approval, skipped or stale: no timings, and no place in the limit."""
+        never_ran = [{**RUN, "id": 100 + i, "conclusion": c} for i, c in enumerate(["action_required", "skipped", "stale"])]
+        ran = [{**RUN, "id": 200 + i} for i in range(22)]
+        transport = FakeTransport([
+            ("/jobs", JOBS),
+            ("&page=1&", {"workflow_runs": never_ran + ran}),
+            ("&page=2&", {"workflow_runs": [{**RUN, "id": 300 + i} for i in range(25)]}),
+        ])
+
+        logs = fetch_build_logs("acme/web", limit=25, transport=transport)
+
+        assert len(logs) == 25
+        assert not {log.build_id for log in logs} & {"100", "101", "102"}
+        assert not transport.calls_matching("/runs/100/")
+
+    def test_cancelled_runs_are_kept(self):
+        transport = FakeTransport(default_routes(runs=[{**RUN, "conclusion": "cancelled"}]))
+
+        assert len(fetch_build_logs("acme/web", limit=1, transport=transport)) == 1
+
+    def test_a_listing_of_runs_that_never_ran_stops(self):
+        """A workflow that is always skipped must not page through its whole history."""
+        transport = FakeTransport([
+            ("/actions/runs?", {"workflow_runs": [{**RUN, "id": 100 + i, "conclusion": "skipped"} for i in range(25)]}),
+        ])
+
+        assert fetch_build_logs("acme/web", limit=50, transport=transport) == []
+        # Three pages hold the limit and its margin; at most three times that are read
+        assert len(transport.calls_matching("/actions/runs?")) == 9
+
     def test_pull_requests_are_left_out_of_the_listing(self):
         transport = FakeTransport(default_routes())
         fetch_build_logs("acme/web", limit=1, transport=transport)
@@ -308,7 +341,7 @@ class TestClientRequests:
         transport = FakeTransport([
             ("/jobs", JOBS),
             ("&page=1&", {"workflow_runs": runs}),
-            ("&page=2&", {"workflow_runs": [{**RUN, "id": 999}]}),
+            ("&page=", {"workflow_runs": [{**RUN, "id": 999}]}),
         ])
 
         logs = fetch_build_logs("acme/web", limit=50, transport=transport)

@@ -7,6 +7,7 @@ so analysis does not depend on parsing runner log text.
 
 import base64
 import json
+import math
 import os
 import time
 import urllib.error
@@ -33,6 +34,15 @@ _PER_PAGE = 100
 # GitHub takes longer to build a bigger page of runs, so a limit is split into
 # smaller pages, one per worker, down to this size
 _MIN_RUNS_PAGE = 25
+
+# Runs that never ran are skipped and made up from later pages, but the
+# listing stops after this many times the pages the limit needed
+_MAX_LISTING_FACTOR = 3
+
+# Run conclusions for runs that never executed: waiting for a maintainer's
+# approval (pull requests from forks), skipped by the workflow's conditions,
+# or superseded while queued. They have no timings to analyze.
+_NOT_RUN_CONCLUSIONS = frozenset({"action_required", "skipped", "stale"})
 
 # A run with many jobs, each with many steps, can make GitHub time out
 # building a 100-job page (502/504); such runs are paged in smaller pieces
@@ -324,6 +334,7 @@ class GitHubClient:
         branch: str | None = None,
         limit: int = DEFAULT_RUN_LIMIT,
         status: str | None = "completed",
+        include: Callable[[dict[str, Any]], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Yield up to `limit` workflow runs, newest first.
 
@@ -334,6 +345,8 @@ class GitHubClient:
             limit: Maximum number of runs to yield
             status: Run status filter; "completed" skips in-flight runs whose
                 timings are not final yet
+            include: Optional filter; runs it rejects are not yielded and do
+                not count towards `limit`, so later pages are read instead
         """
         if limit <= 0:
             return
@@ -349,8 +362,13 @@ class GitHubClient:
         # of the payload; nothing reads them (a run's pull request is looked up
         # by its commit). Eight pages of 25 come back in about half the time
         # of two pages of 100.
-        per_page = min(_PER_PAGE, max(_MIN_RUNS_PAGE, -(-limit // DEFAULT_WORKERS)), limit)
-        pages = -(-limit // per_page)
+        # With a filter, a margin is listed up front: a second round of pages
+        # for the runs it dropped would add a few seconds.
+        target = limit + limit // 4 if include is not None else limit
+        per_page = min(_PER_PAGE, max(_MIN_RUNS_PAGE, -(-target // DEFAULT_WORKERS)), target)
+        pages = -(-target // per_page)
+        # Filtered out runs are made up from later pages, within reason
+        last_page = pages * _MAX_LISTING_FACTOR
 
         def fetch(page: int) -> list[dict[str, Any]]:
             payload = self._get(
@@ -365,27 +383,39 @@ class GitHubClient:
             )
             return payload.get("workflow_runs", []) if isinstance(payload, dict) else []
 
-        with ThreadPoolExecutor(max_workers=min(DEFAULT_WORKERS, pages)) as pool:
-            batches = list(pool.map(fetch, range(1, pages + 1)))
-
         seen: set[Any] = set()
-        yielded = 0
+        yielded = listed = 0
+        first = 1
 
-        for runs in batches:
-            for run in runs:
-                # A run created while the pages were fetched shifts the others
-                # by one, which can show a run on two pages
-                if run.get("id") in seen:
-                    continue
-                seen.add(run.get("id"))
-                yield run
-                yielded += 1
-                if yielded >= limit:
+        while first <= last_page:
+            with ThreadPoolExecutor(max_workers=min(DEFAULT_WORKERS, pages)) as pool:
+                batches = list(pool.map(fetch, range(first, first + pages)))
+
+            for runs in batches:
+                for run in runs:
+                    # A run created while the pages were fetched shifts the
+                    # others by one, which can show a run on two pages
+                    if run.get("id") in seen:
+                        continue
+                    seen.add(run.get("id"))
+                    listed += 1
+                    if include is not None and not include(run):
+                        continue
+                    yield run
+                    yielded += 1
+                    if yielded >= limit:
+                        return
+
+                # A short page is the last one; later pages can only be empty
+                if len(runs) < per_page:
                     return
 
-            # A short page is the last one; later pages can only be empty
-            if len(runs) < per_page:
-                return
+            # Enough further pages for the runs still missing, at the share
+            # of listed runs the filter has kept so far
+            first += pages
+            kept = max(yielded / listed, 0.1)
+            needed = math.ceil((limit - yielded) / (per_page * kept))
+            pages = max(1, min(DEFAULT_WORKERS, last_page - first + 1, needed))
 
     def fetch_run_jobs(self, run_id: int | str, run_attempt: int | None = None) -> list[dict[str, Any]]:
         """Return every job of a workflow run attempt, following pagination.
@@ -572,6 +602,11 @@ def _earlier_attempt(run: dict[str, Any], attempt: int) -> dict[str, Any]:
     }
 
 
+def _ran(run: dict[str, Any]) -> bool:
+    """Whether a run executed at all, so that it has timings to analyze."""
+    return run.get("conclusion") not in _NOT_RUN_CONCLUSIONS
+
+
 def fetch_build_logs(
     repo: str,
     workflow: str | None = None,
@@ -591,6 +626,9 @@ def fetch_build_logs(
     request of their own. Those dominate the wall clock, so cached runs are
     served from `cache` (see cache.RunCache) and the rest are fetched
     concurrently.
+
+    Runs that never executed (awaiting approval, skipped, stale) are left
+    out and do not count towards `limit`.
 
     The runs listing only shows the latest attempt of a re-run. The earlier
     attempts are fetched too, as BuildLogs of their own: a step that failed
@@ -628,7 +666,7 @@ def fetch_build_logs(
     # One entry per (run, attempt), newest first: (payload, attempt, superseded)
     attempts: list[tuple[dict[str, Any], int, bool]] = []
 
-    for run in client.iter_workflow_runs(workflow=workflow, branch=branch, limit=limit):
+    for run in client.iter_workflow_runs(workflow=workflow, branch=branch, limit=limit, include=_ran):
         if run.get("id") is None:
             continue
 
