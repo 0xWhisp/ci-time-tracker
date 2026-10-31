@@ -6,11 +6,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Runs that never executed (awaiting a maintainer's approval, skipped by the
+  workflow's conditions, or stale) are left out of the analysis and no longer
+  count towards `--last`. They showed up as 0-second builds: on pydantic, 120
+  of 300 runs, which put its median build at 18 s instead of 8 minutes.
+- Regressions must also be large against the step's own variation (three
+  times the noisier side's median absolute deviation). With hundreds of steps
+  checked, the best split of a merely noisy one was reported: 16 such
+  regressions within one day on pydantic.
+- Tests never reach the network.
+
 ### Changed
 
+- README: an example report (microsoft/TypeScript) and a one-line start.
 - Faster analyses: workflow files are cached by the commit they were read at
-  (an analysis whose runs are all cached makes no request for them), and the
-  run listing is split into smaller pages fetched together, one per worker.
+  (an analysis whose runs are all cached makes no request for them), the run
+  listing is split into smaller pages fetched together, one per worker, and
+  the default branch is looked up while the runs are listed.
   A cached 200-run analysis of psf/requests went from 3.7 s to 2.9 s.
 - Recommendations read each workflow file as of the newest analyzed run from
   the repository itself, instead of the default branch's current version.

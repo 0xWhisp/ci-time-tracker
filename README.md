@@ -5,22 +5,44 @@
 
 Find where your CI time and money go. ci-time-tracker reads your GitHub Actions
 history and reports the steps that cost the most, the ones that are flaky, and
-the ones that got slower, with the commit where it started. Its GitHub Action
-comments on each pull request with how it changes CI time and cost.
+the ones that got slower, with the commit where it started. It also recommends
+changes to your workflows, backed by what your runs actually did. Its GitHub
+Action comments on each pull request with how it changes CI time and cost.
+
+```bash
+pip install ci-time-tracker
+ci-time-tracker --github owner/repo --last 300 --format html --output report.html
+```
+
+[![Report for microsoft/TypeScript](docs/example-report.png)](https://0xwhisp.github.io/ci-time-tracker/example-report.html)
+
+**[See the full example report](https://0xwhisp.github.io/ci-time-tracker/example-report.html)**
+for the last 300 runs of microsoft/TypeScript: three flaky steps, and
+recommendations with up to 135 hours of runner time at stake, such as running
+the Windows legs of three jobs only after merging, since in 87 builds they
+never failed when Linux passed.
+
+Set `GITHUB_TOKEN` first (with the GitHub CLI: `export GITHUB_TOKEN=$(gh auth token)`):
+each run costs a request, and without a token GitHub allows 60 an hour.
 
 ## Features
 
-- **Config Analysis**: Parse GitHub Actions, GitLab CI, and CircleCI configurations to extract pipeline structure
-- **Log Analysis**: Parse build logs to compute actual step durations and statistics
+- **History from the API**: Reads workflow runs, jobs and steps straight from
+  the GitHub Actions API, cached locally so later runs take seconds
 - **Flaky Detection**: Flag steps that both failed and passed on the same commit,
   including runs that only passed on a re-run
-- **Regression Detection**: Flag steps whose duration jumped and stayed up, and
-  name the commit where it started
-- **Cost and Time**: Rank steps by the time they consume, estimate cost per runner,
-  and separate queue time from execution time
+- **Regression Detection**: Flag steps whose duration jumped and stayed up, well
+  beyond their usual variation, and name the commit where it started
+- **Recommendations**: Dependency caching, cancelling superseded pull request
+  runs, and matrix legs that never catch anything, each with the time at stake
+- **Cost and Time**: Rank steps by the time they consume, estimate cost per runner
+  at GitHub's list prices, and separate queue time from execution time
 - **Pull Request Comments**: A GitHub Action that tells each pull request how it
   changes CI time and cost, and whether its failures are in known flaky steps
-- **Multiple Output Formats**: Human-readable text or JSON for dashboard integration
+- **Output Formats**: A self-contained HTML report, Markdown for
+  `$GITHUB_STEP_SUMMARY`, text, or JSON for dashboards; `--fail-on` gates
+- **Config and Log Analysis**: Also parses GitHub Actions, GitLab CI and
+  CircleCI configurations and build logs, for providers without API support yet
 
 ## Installation
 
@@ -527,13 +549,21 @@ A step has **regressed** when its duration jumped and stayed up:
 2. The later segment's median must be at least **25%** higher
    (`--regression-threshold`) and at least **10 seconds** higher, so `1s -> 2s`
    steps are not reported.
-3. The most recent 5 builds must still be that slow, so a spike that already
+3. The jump must be at least **three times** the step's usual variation (the
+   median absolute deviation of the noisier segment). With hundreds of steps
+   checked, the best split of a merely noisy one would otherwise clear the
+   thresholds above by chance.
+4. The most recent 5 builds must still be that slow, so a spike that already
    recovered is not reported.
 
 The report names the commit and build where the regression started. A step
 needs at least **10 builds** to be judged; `regression_checked_steps` says how
 many had enough history. With `--group-matrix`, the legs of a build are
 combined into one sample (their median).
+
+Runs that never executed (awaiting a maintainer's approval, skipped by the
+workflow's conditions, or stale) have no timings and are left out; they do not
+count towards `--last`.
 
 When the analyzed runs span several branches, regressions are looked for on
 the repository's default branch only (`regression_branch`). Pull request
