@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-30
+
 ### Added
 
 - **HTML report** (`--format html`): one self-contained page with summary
@@ -98,4 +100,5 @@ replaces it.
 - An empty result for `--branch` now names the repository's default branch
   when it differs (`main` versus `master`).
 
+[0.3.0]: https://github.com/0xWhisp/ci-time-tracker/releases/tag/v0.3.0
 [0.2.0]: https://github.com/0xWhisp/ci-time-tracker/releases/tag/v0.2.0
