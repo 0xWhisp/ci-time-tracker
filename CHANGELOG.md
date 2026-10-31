@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Faster analyses: workflow files are cached by the commit they were read at
+  (an analysis whose runs are all cached makes no request for them), and the
+  run listing is split into smaller pages fetched together, one per worker.
+  A cached 200-run analysis of psf/requests went from 3.7 s to 2.9 s.
+- Recommendations read each workflow file as of the newest analyzed run from
+  the repository itself, instead of the default branch's current version.
+
 ## [0.3.0] - 2026-10-30
 
 ### Added

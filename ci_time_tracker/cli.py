@@ -400,38 +400,69 @@ def _visibility_pricing(logs: list[Any], pricing: Any) -> tuple[PricingTable, st
 _MAX_WORKFLOW_FILES = 20
 
 
-def _fetch_workflows(repo: str, logs: list[Any]) -> dict[str, dict[str, Any]]:
+def _workflow_refs(repo: str, logs: list[Any]) -> dict[str, str | None]:
+    """Map each workflow file behind the runs to the commit to read it at.
+
+    That is the newest run's commit from the repository itself (a fork's
+    commit may not be readable through it). None reads the default branch.
+    """
+    def rank(log: Any) -> tuple[bool, float]:
+        own = log.metadata.get("head_repository") in (None, repo)
+        return bool(own and log.head_sha), log.timestamp.timestamp() if log.timestamp else float("-inf")
+
+    newest: dict[str, Any] = {}
+    for log in logs:
+        path = str(log.metadata.get("workflow_path") or "")
+        if path.startswith(".github/workflows/") and (path not in newest or rank(log) > rank(newest[path])):
+            newest[path] = log
+
+    return {
+        path: newest[path].head_sha if rank(newest[path])[0] else None
+        for path in sorted(newest)[:_MAX_WORKFLOW_FILES]
+    }
+
+
+def _fetch_workflows(repo: str, logs: list[Any], cache: Any = None) -> dict[str, dict[str, Any]]:
     """Fetch and parse the workflow files behind the analyzed runs.
 
     Recommendations that need a workflow's configuration skip the ones that
     cannot be read, so a failure here only narrows what is recommended.
+    Files read at a commit are cached, since that pins their content.
     """
-    paths = sorted({
-        log.metadata["workflow_path"]
-        for log in logs
-        if str(log.metadata.get("workflow_path") or "").startswith(".github/workflows/")
-    })[:_MAX_WORKFLOW_FILES]
+    refs = _workflow_refs(repo, logs)
+    texts: dict[str, str | None] = {}
+    if cache is not None:
+        for path, ref in refs.items():
+            if ref:
+                cached = cache.get_workflow_file(repo, path, ref)
+                if cached is not None:
+                    texts[path] = cached
 
-    if not paths:
-        return {}
+    missing = [path for path in refs if path not in texts]
+    if missing:
+        client = GitHubClient(repo=repo, token=resolve_token())
 
-    client = GitHubClient(repo=repo, token=resolve_token())
+        def fetch(path: str) -> tuple[str, str | None]:
+            try:
+                return path, client.fetch_workflow_file(path, ref=refs[path])
+            except GitHubAPIError as e:
+                print(f"Warning: could not read {path} ({e}); skipping its recommendations", file=sys.stderr)
+                return path, None
 
-    def fetch(path: str) -> tuple[str, str | None]:
-        try:
-            return path, client.fetch_workflow_file(path)
-        except GitHubAPIError as e:
-            print(f"Warning: could not read {path} ({e}); skipping its recommendations", file=sys.stderr)
-            return path, None
+        # Fetched concurrently: one after the other they added over a second
+        # to an analysis whose runs were all cached
+        with ThreadPoolExecutor(max_workers=min(DEFAULT_WORKERS, len(missing))) as pool:
+            for path, text in pool.map(fetch, missing):
+                texts[path] = text
+                if text is not None and cache is not None and refs[path]:
+                    cache.store_workflow_file(repo, path, refs[path], text)
 
-    # Fetched concurrently: these requests are not cached, and one after the
-    # other they added over a second to a cached analysis
     workflows: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=min(DEFAULT_WORKERS, len(paths))) as pool:
-        for path, text in pool.map(fetch, paths):
-            parsed = parse_workflow(text) if text else None
-            if parsed is not None:
-                workflows[path] = parsed
+    for path in refs:
+        text = texts.get(path)
+        parsed = parse_workflow(text) if text else None
+        if parsed is not None:
+            workflows[path] = parsed
 
     return workflows
 
@@ -682,6 +713,7 @@ def main() -> int:
                     cache=cache,
                     skipped=skipped,
                 )
+                workflows = _fetch_workflows(args.github, logs, cache) if logs else {}
             except GitHubAPIError as e:
                 print(f"Error: {e}", file=sys.stderr)
                 return 3
@@ -713,7 +745,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
             result.recommendations = [
-                item.to_dict() for item in recommend(logs, _fetch_workflows(args.github, logs), pricing)
+                item.to_dict() for item in recommend(logs, workflows, pricing)
             ]
 
         else:

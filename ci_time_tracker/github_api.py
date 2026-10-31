@@ -30,6 +30,10 @@ DEFAULT_WORKERS = 8
 
 _PER_PAGE = 100
 
+# GitHub takes longer to build a bigger page of runs, so a limit is split into
+# smaller pages, one per worker, down to this size
+_MIN_RUNS_PAGE = 25
+
 # A run with many jobs, each with many steps, can make GitHub time out
 # building a 100-job page (502/504); such runs are paged in smaller pieces
 _SMALL_JOBS_PAGE = 30
@@ -343,8 +347,9 @@ class GitHubClient:
         # together: listing is the slowest part of a cached analysis, at a few
         # seconds a page. The pull requests attached to each run are left out
         # of the payload; nothing reads them (a run's pull request is looked up
-        # by its commit).
-        per_page = min(_PER_PAGE, limit)
+        # by its commit). Eight pages of 25 come back in about half the time
+        # of two pages of 100.
+        per_page = min(_PER_PAGE, max(_MIN_RUNS_PAGE, -(-limit // DEFAULT_WORKERS)), limit)
         pages = -(-limit // per_page)
 
         def fetch(page: int) -> list[dict[str, Any]]:

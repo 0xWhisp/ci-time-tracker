@@ -251,34 +251,50 @@ class TestClientRequests:
 
     def test_pagination_walks_pages_until_limit(self):
         """A limit above one page keeps paging."""
-        first_page = [{**RUN, "id": 1000 + index} for index in range(100)]
-        # "&page=1&", not "page=1", which "per_page=100" also contains
+        first_page = [{**RUN, "id": 1000 + index} for index in range(25)]
+        # "&page=1&", not "page=1", which "per_page=..." could also contain
         transport = FakeTransport([
             ("/jobs", JOBS),
             ("&page=1&", {"workflow_runs": first_page}),
             ("&page=2&", {"workflow_runs": [{**RUN, "id": 2000}]}),
         ])
 
-        logs = fetch_build_logs("acme/web", limit=101, transport=transport)
+        logs = fetch_build_logs("acme/web", limit=26, transport=transport)
 
-        assert len(logs) == 101
-        assert len({log.build_id for log in logs}) == 101
+        assert len(logs) == 26
+        assert len({log.build_id for log in logs}) == 26
         assert transport.calls_matching("&page=2&")
 
     def test_pages_are_requested_together_and_deduplicated(self):
         """A run created while listing shifts it onto two pages: it counts once."""
-        first_page = [{**RUN, "id": 1000 + index} for index in range(100)]
-        second_page = [{**RUN, "id": 1099}] + [{**RUN, "id": 2000 + index} for index in range(99)]
+        first_page = [{**RUN, "id": 1000 + index} for index in range(25)]
+        second_page = [{**RUN, "id": 1024}] + [{**RUN, "id": 2000 + index} for index in range(24)]
         transport = FakeTransport([
             ("/jobs", JOBS),
             ("&page=1&", {"workflow_runs": first_page}),
             ("&page=2&", {"workflow_runs": second_page}),
         ])
 
-        logs = fetch_build_logs("acme/web", limit=200, transport=transport)
+        logs = fetch_build_logs("acme/web", limit=50, transport=transport)
 
-        assert len(logs) == 199
-        assert len({log.build_id for log in logs}) == 199
+        assert len(logs) == 49
+        assert len({log.build_id for log in logs}) == 49
+
+    @pytest.mark.parametrize(("limit", "per_page", "pages"), [
+        (10, 10, 1),
+        (50, 25, 2),
+        (200, 25, 8),
+        (400, 50, 8),
+        (1000, 100, 10),
+    ])
+    def test_a_limit_is_split_into_a_page_per_worker(self, limit, per_page, pages):
+        """Smaller pages come back faster, so the workers share the limit."""
+        transport = FakeTransport([("/actions/runs?", {"workflow_runs": []})])
+        list(GitHubClient(repo="acme/web", transport=transport).iter_workflow_runs(limit=limit))
+
+        calls = transport.calls_matching("/actions/runs?")
+        assert len(calls) == pages
+        assert all(f"per_page={per_page}&" in url for url in calls)
 
     def test_pull_requests_are_left_out_of_the_listing(self):
         transport = FakeTransport(default_routes())
@@ -287,14 +303,17 @@ class TestClientRequests:
         assert "exclude_pull_requests=true" in transport.calls[0]
 
     def test_short_page_is_the_last_one(self):
-        """Fewer runs than asked for means there is no next page to request."""
+        """Fewer runs than a page holds means the later pages are not read."""
         runs = [{**RUN, "id": 100 + index} for index in range(3)]
-        transport = FakeTransport(default_routes(runs=runs))
+        transport = FakeTransport([
+            ("/jobs", JOBS),
+            ("&page=1&", {"workflow_runs": runs}),
+            ("&page=2&", {"workflow_runs": [{**RUN, "id": 999}]}),
+        ])
 
         logs = fetch_build_logs("acme/web", limit=50, transport=transport)
 
-        assert len(logs) == 3
-        assert len(transport.calls_matching("/actions/runs?")) == 1
+        assert sorted(log.build_id for log in logs) == ["100", "101", "102"]
 
     def test_empty_page_stops_pagination(self):
         transport = FakeTransport([
