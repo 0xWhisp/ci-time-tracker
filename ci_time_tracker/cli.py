@@ -26,6 +26,7 @@ from ci_time_tracker.github_api import (
     fetch_impact_inputs,
     resolve_token,
 )
+from ci_time_tracker.html_report import format_html
 from ci_time_tracker.impact import compare_run, format_impact_markdown
 from ci_time_tracker.log_parser import parse_log
 from ci_time_tracker.pricing import PricingTable, load_pricing
@@ -219,10 +220,10 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--format",
         type=str,
-        choices=["json", "text", "markdown"],
+        choices=["json", "text", "markdown", "html"],
         default="text",
         help="Output format (default: text). Markdown suits $GITHUB_STEP_SUMMARY "
-             "and PR comments.",
+             "and PR comments; html is a self-contained page with charts.",
     )
     
     parser.add_argument(
@@ -359,6 +360,21 @@ def load_estimates(path: str) -> dict[str, float]:
         estimates[key] = float(value)
     
     return estimates
+
+
+def _default_branch_if_mixed(repo: str, logs: list[Any]) -> str | None:
+    """The repository's default branch, when the runs span several branches.
+
+    Regressions are looked for on that branch only; with a single branch
+    there is nothing to choose and no request is made.
+    """
+    branches = {log.metadata.get("branch") for log in logs if log.metadata.get("branch")}
+    if len(branches) < 2:
+        return None
+    try:
+        return GitHubClient(repo=repo, token=resolve_token()).fetch_default_branch()
+    except (GitHubAPIError, KeyError, TypeError):
+        return None
 
 
 def _visibility_pricing(logs: list[Any], pricing: Any) -> tuple[PricingTable, str | None]:
@@ -684,7 +700,9 @@ def main() -> int:
                 pricing,
                 args.group_matrix,
                 regression_threshold=args.regression_threshold,
+                regression_branch=_default_branch_if_mixed(args.github, logs),
             )
+            result.metadata["repository"] = args.github
             if visibility:
                 result.metadata["repository_visibility"] = visibility
             if skipped:
@@ -711,6 +729,8 @@ def main() -> int:
             output = format_json(report)
         elif args.format == "markdown":
             output = format_markdown(report, args.top)
+        elif args.format == "html":
+            output = format_html(report, args.top)
         else:
             output = format_text(report, args.top)
         

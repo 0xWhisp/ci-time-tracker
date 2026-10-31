@@ -172,6 +172,7 @@ def analyze_logs(
     group_matrix: bool = False,
     regression_threshold: float = DEFAULT_REGRESSION_THRESHOLD,
     min_samples: int = DEFAULT_MIN_SAMPLES,
+    regression_branch: str | None = None,
 ) -> AnalysisResult:
     """Analyze multiple build logs and compute statistics.
 
@@ -190,6 +191,9 @@ def analyze_logs(
         regression_threshold: Minimum relative duration increase to report,
             e.g. 0.25 for +25%
         min_samples: Minimum builds on each side of a regression
+        regression_branch: When builds span several branches, the one
+            regressions are looked for on (the default branch); defaults to
+            the branch with the most builds
 
     Returns:
         AnalysisResult in log mode with step statistics and detected issues
@@ -297,6 +301,17 @@ def analyze_logs(
             name: {"method": "failure-rate"} for name in detect_flaky_steps(step_stats)
         }
 
+    # Regressions are looked for on one branch only. Pull request branches
+    # run different code with different caches, and mixed into one series
+    # they read as changes that never happened (seen on rubocop, whose
+    # 26 master builds were mixed with 74 from pull requests).
+    branches = Counter(log.metadata.get("branch") for log in logs if log.metadata.get("branch"))
+    if len(branches) > 1:
+        if regression_branch not in branches:
+            regression_branch = branches.most_common(1)[0][0]
+    else:
+        regression_branch = None  # one branch or none known: all builds compare
+
     # Regressions, from one sample per build (the median across matrix legs
     # when they are grouped), in chronological order
     regression_checked = 0
@@ -306,6 +321,7 @@ def analyze_logs(
         samples = [
             (median(values), logs[build_index])
             for build_index, values in sorted(build_durations.items())
+            if regression_branch is None or logs[build_index].metadata.get("branch") == regression_branch
         ]
 
         if len(samples) >= 2 * min_samples:
@@ -344,16 +360,40 @@ def analyze_logs(
     metadata["flaky_detection"] = flaky_method
     metadata["regression_checked_steps"] = regression_checked
     metadata["regression_min_builds"] = 2 * min_samples
+    if regression_branch:
+        metadata["regression_branch"] = regression_branch
     metadata.update(aggregate_job_metrics(logs, pricing))
 
     return AnalysisResult(
         mode="log",
         steps=step_stats,
         total_estimated_duration=None,
+        timeline=build_timeline(logs),
         regressed_steps=[stats.name for stats in step_stats if stats.is_regression],
         flaky_steps=[stats.name for stats in step_stats if stats.is_flaky],
         metadata=metadata,
     )
+
+
+def build_timeline(logs: list[BuildLog]) -> list[dict[str, Any]]:
+    """One entry per build, in the given order, for trend charts.
+
+    Earlier attempts of re-runs are left out: they are part of the same build.
+    """
+    return [
+        {
+            "build_id": log.build_id,
+            "timestamp": log.timestamp.isoformat() if log.timestamp else None,
+            "duration": log.total_duration,
+            "conclusion": log.conclusion,
+            "head_sha": log.head_sha[:7] if log.head_sha else None,
+            "workflow": log.metadata.get("workflow_name"),
+            "branch": log.metadata.get("branch"),
+            "url": log.metadata.get("url"),
+        }
+        for log in logs
+        if not log.metadata.get("superseded_attempt")
+    ]
 
 
 def aggregate_job_metrics(

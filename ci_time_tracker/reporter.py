@@ -128,6 +128,7 @@ def generate_report(result: AnalysisResult, title: str | None = None) -> Report:
         steps=steps_data,
         issues=issues,
         recommendations=list(result.recommendations),
+        timeline=list(result.timeline),
     )
 
 
@@ -589,9 +590,10 @@ def format_markdown(report: Report, top: int | None = None) -> str:
         elif summary.get("flaky_detection") == "failure-rate":
             notes.append("flaky by failure rate only (no commit data)")
         if "regression_checked_steps" in summary:
+            on_branch = f" on `{summary['regression_branch']}`" if summary.get("regression_branch") else ""
             notes.append(
                 f"regressions checked on {summary['regression_checked_steps']} steps with "
-                f"≥{summary.get('regression_min_builds', '?')} builds"
+                f"≥{summary.get('regression_min_builds', '?')} builds{on_branch}"
             )
         if summary.get("estimated_cost_usd") is not None:
             if summary.get("repository_visibility") == "public":
