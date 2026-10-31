@@ -2,7 +2,8 @@
 
 Listing workflow runs is cheap, but every run costs an extra request for its
 jobs. Those payloads no longer change once a run has completed, so they are
-stored in a small SQLite database between invocations.
+stored in a small SQLite database between invocations. Workflow files are
+stored too, keyed by the commit they were read at, which pins their content.
 """
 
 import json
@@ -20,6 +21,14 @@ CREATE TABLE IF NOT EXISTS run_jobs (
     fetched_at TEXT NOT NULL,
     payload TEXT NOT NULL,
     PRIMARY KEY (repo, run_id, run_attempt)
+);
+CREATE TABLE IF NOT EXISTS workflow_files (
+    repo TEXT NOT NULL,
+    path TEXT NOT NULL,
+    ref TEXT NOT NULL,
+    fetched_at TEXT NOT NULL,
+    content TEXT NOT NULL,
+    PRIMARY KEY (repo, path, ref)
 );
 """
 
@@ -90,6 +99,23 @@ class RunCache:
                 datetime.now(timezone.utc).isoformat(),
                 json.dumps(jobs),
             ),
+        )
+        self._connection.commit()
+
+    def get_workflow_file(self, repo: str, path: str, ref: str) -> str | None:
+        """Return a workflow file as read at commit `ref`, or None when not cached."""
+        row = self._connection.execute(
+            "SELECT content FROM workflow_files WHERE repo = ? AND path = ? AND ref = ?",
+            (repo, path, ref),
+        ).fetchone()
+        return None if row is None else row[0]
+
+    def store_workflow_file(self, repo: str, path: str, ref: str, content: str) -> None:
+        """Cache a workflow file as read at commit `ref`."""
+        self._connection.execute(
+            "INSERT OR REPLACE INTO workflow_files "
+            "(repo, path, ref, fetched_at, content) VALUES (?, ?, ?, ?, ?)",
+            (repo, path, ref, datetime.now(timezone.utc).isoformat(), content),
         )
         self._connection.commit()
 
