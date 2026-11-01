@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.3.1] - 2026-11-01
 
+### Added
+
+- `--version`.
+
 ### Fixed
 
 - The HTML report's issues card says how many regressions and how many flaky
