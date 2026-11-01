@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `--since 30d` (or `12h`, `2w`, a date): analyze every run of a period
+  instead of a number of runs. On pydantic, 300 runs are a single day. A
+  period holding more runs than GitHub lists (1000) is flagged, with the date
+  the analysis covers from.
+
+### Fixed
+
+- A response cut short (`IncompleteRead`) or a reset connection is retried
+  like other network errors, instead of ending the run with "Unexpected
+  error". Seen on pydantic's large jobs pages.
+
 ### Fixed
 
 - Runs that never executed (awaiting a maintainer's approval, skipped by the

@@ -1,6 +1,7 @@
 """Tests for recommendations, public-repository pricing and API robustness."""
 
 import base64
+import http.client
 import io
 import urllib.error
 from datetime import datetime, timedelta, timezone
@@ -419,6 +420,23 @@ class TestRetries:
         calls, _ = self._urlopen(monkeypatch, [urllib.error.URLError("reset"), '{"ok": true}'])
 
         assert github_api._urllib_transport("https://api.github.com/x", {})[0] == {"ok": True}
+
+    @pytest.mark.parametrize("error", [
+        http.client.IncompleteRead(b"", 302024),  # seen on pydantic's jobs pages
+        http.client.RemoteDisconnected("closed"),
+        ConnectionResetError("reset by peer"),
+    ])
+    def test_a_cut_connection_is_retried(self, monkeypatch, error):
+        calls, _ = self._urlopen(monkeypatch, [error, '{"ok": true}'])
+
+        assert github_api._urllib_transport("https://api.github.com/x", {})[0] == {"ok": True}
+        assert len(calls) == 2
+
+    def test_a_cut_connection_that_persists_is_an_api_error(self, monkeypatch):
+        self._urlopen(monkeypatch, [http.client.IncompleteRead(b"", 10)] * 3)
+
+        with pytest.raises(GitHubAPIError, match="Could not reach"):
+            github_api._urllib_transport("https://api.github.com/x", {})
 
     def test_gives_up_after_three_attempts(self, monkeypatch):
         calls, _ = self._urlopen(monkeypatch, [http_error(502)] * 3)
