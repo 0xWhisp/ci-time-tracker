@@ -574,3 +574,14 @@ structure: true
         finally:
             Path(config_path).unlink()
 
+
+
+def test_version(monkeypatch, capsys):
+    from ci_time_tracker import __version__
+
+    monkeypatch.setattr("sys.argv", ["ci-time-tracker", "--version"])
+    with pytest.raises(SystemExit) as exit_info:
+        main()
+
+    assert exit_info.value.code == 0
+    assert capsys.readouterr().out.strip() == f"ci-time-tracker {__version__}"
