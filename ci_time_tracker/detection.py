@@ -8,8 +8,9 @@ its job.
 
 Regression: a step whose duration jumped and stayed up. The step's history is
 split at the point that best separates "before" from "after", and the jump
-must be large in both relative and absolute terms and still hold for the most
-recent builds, so that a spike that already recovered is not reported.
+must be large in both relative and absolute terms, large against the step's
+own variation, and still hold for the most recent builds, so that a spike that
+already recovered is not reported.
 """
 
 import heapq
@@ -23,6 +24,12 @@ from ci_time_tracker.models import BuildLog
 DEFAULT_REGRESSION_THRESHOLD = 0.25
 DEFAULT_MIN_SAMPLES = 5
 DEFAULT_MIN_INCREASE_SECONDS = 10.0
+
+# The jump must be this many times the noisier segment's median absolute
+# deviation. Checking hundreds of steps, the best split of a merely noisy one
+# often clears the relative and absolute thresholds: in field tests such
+# splits stayed under 3 times the noise, a real regression went well above.
+DEFAULT_MIN_SHIFT_SPREADS = 3.0
 
 _EXAMPLE_COMMITS = 3
 _SHORT_SHA = 7
@@ -160,19 +167,26 @@ def _prefix_medians_and_costs(values: list[float]) -> list[tuple[float, float]]:
     return results
 
 
+def _median_absolute_deviation(values: list[float]) -> float:
+    center = median(values)
+    return median(abs(value - center) for value in values)
+
+
 def detect_regression(
     samples: list[tuple[float, BuildLog]],
     threshold: float = DEFAULT_REGRESSION_THRESHOLD,
     min_samples: int = DEFAULT_MIN_SAMPLES,
     min_increase_seconds: float = DEFAULT_MIN_INCREASE_SECONDS,
+    min_shift_spreads: float = DEFAULT_MIN_SHIFT_SPREADS,
 ) -> dict[str, Any] | None:
     """Detect a lasting increase in a step's duration.
 
     Finds the single split that best divides the history into two stable
     segments (least total absolute deviation from each segment's median),
     then reports a regression only when the later segment is slower by at
-    least `threshold` and `min_increase_seconds`, and the most recent
-    `min_samples` builds are still that slow.
+    least `threshold`, `min_increase_seconds` and `min_shift_spreads` times
+    the noisier segment's variation, and the most recent `min_samples` builds
+    are still that slow.
 
     Args:
         samples: (duration, build) pairs in chronological order, one per build
@@ -180,6 +194,9 @@ def detect_regression(
         min_samples: Minimum builds on each side of the split
         min_increase_seconds: Minimum absolute increase, so that 1s -> 2s
             steps are not reported
+        min_shift_spreads: Minimum increase in units of the noisier
+            segment's median absolute deviation, so that the best split of a
+            noisy step is not reported
 
     Returns:
         Regression details, or None when there is none or too little history
@@ -215,6 +232,10 @@ def detect_regression(
     if current < required or recent < required:
         return None
     if current - baseline < min_increase_seconds or recent - baseline < min_increase_seconds:
+        return None
+
+    spread = max(_median_absolute_deviation(durations[:split]), _median_absolute_deviation(durations[split:]))
+    if current - baseline < min_shift_spreads * spread:
         return None
 
     started = samples[split][1]

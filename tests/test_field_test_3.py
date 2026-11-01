@@ -2,6 +2,7 @@
 spring-boot, django, rubocop): regressions on one branch, and matrix-leg
 recommendations grouped per workflow and platform."""
 
+from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 
 from ci_time_tracker.analyzer import analyze_logs
@@ -119,6 +120,17 @@ class TestDefaultBranchLookup:
         )
 
         assert _default_branch_if_mixed("acme/web", [build(1, 1.0, "main"), build(2, 1.0, "fix")]) is None
+
+    def test_a_lookup_under_way_is_used(self, monkeypatch):
+        FakeClient.calls = 0
+        monkeypatch.setattr("ci_time_tracker.cli.GitHubClient", FakeClient)
+        lookup = Future()
+        lookup.set_result("trunk")
+
+        mixed = [build(1, 1.0, "main"), build(2, 1.0, "fix")]
+        assert _default_branch_if_mixed("acme/web", mixed, lookup) == "trunk"
+        assert _default_branch_if_mixed("acme/web", mixed[:1], lookup) is None
+        assert FakeClient.calls == 0
 
     def test_client_reads_the_default_branch(self):
         client = GitHubClient(repo="acme/web", transport=lambda url, headers: ({"default_branch": "trunk"}, {}))

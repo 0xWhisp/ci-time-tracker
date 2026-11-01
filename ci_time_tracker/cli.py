@@ -7,7 +7,7 @@ parsing, file I/O, and orchestration of parsing, analysis, and reporting.
 import argparse
 import json
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -362,19 +362,29 @@ def load_estimates(path: str) -> dict[str, float]:
     return estimates
 
 
-def _default_branch_if_mixed(repo: str, logs: list[Any]) -> str | None:
-    """The repository's default branch, when the runs span several branches.
-
-    Regressions are looked for on that branch only; with a single branch
-    there is nothing to choose and no request is made.
-    """
-    branches = {log.metadata.get("branch") for log in logs if log.metadata.get("branch")}
-    if len(branches) < 2:
-        return None
+def _default_branch(repo: str) -> str | None:
+    """The repository's default branch, or None when it cannot be read."""
     try:
         return GitHubClient(repo=repo, token=resolve_token()).fetch_default_branch()
     except (GitHubAPIError, KeyError, TypeError):
         return None
+
+
+def _default_branch_if_mixed(
+    repo: str,
+    logs: list[Any],
+    lookup: Future[str | None] | None = None,
+) -> str | None:
+    """The repository's default branch, when the runs span several branches.
+
+    Regressions are looked for on that branch only; with a single branch
+    there is nothing to choose. `lookup` is a request already under way;
+    without one, a request is made only when needed.
+    """
+    branches = {log.metadata.get("branch") for log in logs if log.metadata.get("branch")}
+    if len(branches) < 2:
+        return None
+    return lookup.result() if lookup is not None else _default_branch(repo)
 
 
 def _visibility_pricing(logs: list[Any], pricing: Any) -> tuple[PricingTable, str | None]:
@@ -703,6 +713,14 @@ def main() -> int:
                 except Exception as e:
                     print(f"Warning: run cache unavailable ({e})", file=sys.stderr)
 
+            # Runs of every branch almost always need the default branch to
+            # look for regressions on, so it is asked for while listing
+            lookup = None
+            if args.branch is None:
+                lookups = ThreadPoolExecutor(max_workers=1)
+                lookup = lookups.submit(_default_branch, args.github)
+                lookups.shutdown(wait=False)
+
             skipped: list[str] = []
             try:
                 logs = fetch_build_logs(
@@ -732,7 +750,7 @@ def main() -> int:
                 pricing,
                 args.group_matrix,
                 regression_threshold=args.regression_threshold,
-                regression_branch=_default_branch_if_mixed(args.github, logs),
+                regression_branch=_default_branch_if_mixed(args.github, logs, lookup),
             )
             result.metadata["repository"] = args.github
             if visibility:

@@ -300,7 +300,8 @@ class TestFastChangePoint:
         durations = [float(value) for value in values]
 
         expected = reference_regression(durations)
-        result = detect_regression(samples(durations))
+        # The oracle covers the search; the noise rule has its own tests
+        result = detect_regression(samples(durations), min_shift_spreads=0)
 
         if expected is None:
             assert result is None
@@ -381,3 +382,30 @@ class TestRegressionThresholdOption:
     def test_invalid_values_are_rejected(self, value):
         with pytest.raises(SystemExit):
             parse_args(["--logs", "x", "--regression-threshold", value])
+
+
+class TestRegressionAgainstNoise:
+    """Seen on pydantic: 16 regressions in one day, all the best split of a noisy step."""
+
+    def test_the_best_split_of_a_noisy_step_is_not_reported(self):
+        # pydantic's "Test ubuntu-latest / 3.12 / Run pytest": medians 121 -> 166,
+        # yet both halves spread as widely as the jump between them
+        durations = [121.0, 95.0, 160.0, 118.0, 140.0, 166.0, 120.0, 190.0, 171.0, 150.0]
+
+        assert detect_regression(samples(durations), min_shift_spreads=0) is not None
+        assert detect_regression(samples(durations)) is None
+
+    def test_a_clean_jump_is_still_reported(self):
+        durations = [100.0, 104.0, 97.0, 101.0, 99.0, 103.0, 160.0, 158.0, 163.0, 161.0, 157.0, 162.0]
+
+        result = detect_regression(samples(durations))
+
+        assert result is not None
+        assert result["baseline_builds"] == 6
+
+    def test_a_noisy_step_with_a_large_jump_is_still_reported(self):
+        # TypeScript's 623s -> 787s step: noisy, but the jump is four times the noise
+        durations = [600.0, 640.0, 623.0, 610.0, 650.0, 615.0, 630.0,
+                     787.0, 760.0, 800.0, 790.0, 770.0, 810.0, 785.0]
+
+        assert detect_regression(samples(durations)) is not None
