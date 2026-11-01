@@ -437,14 +437,15 @@ cached, and a job without a cache may install in two seconds.
 
 | Recommendation | When |
 |---|---|
-| **Cache dependencies** | A job installs dependencies (pip, uv, poetry, npm, pnpm, yarn, bundler, composer, go) without any cache, and the install takes a median of 20s or more |
+| **Cache dependencies** | A job installs dependencies (pip, uv, poetry, pipenv, npm, pnpm, yarn, bundler, composer, go, cargo, gradle, maven, `dotnet restore`) without any cache, and the step takes a median of 20s or more. For cargo and gradle the suggested caches also keep build output, so a build step counts |
 | **Cancel superseded pull request runs** | Pull request runs kept running after a newer push to the same branch started another run, and the workflow has no `concurrency` with `cancel-in-progress` |
 | **Run expensive matrix legs less often** | Over at least 10 builds, the Windows or macOS legs of a job never failed when its Linux legs passed |
 
 Each one comes with its evidence, a concrete change, and what is at stake: the
 time (and cost) the affected steps or jobs used over the analyzed runs. That is
 an upper bound on the saving, not a promise of it. Findings with less than
-10 minutes at stake are left out, so the list stays worth reading.
+10 minutes at stake are left out, so the list stays worth reading. Findings of
+the same kind in one workflow are grouped into one: the fix is the same.
 
 For example, on pytest-dev/pytest:
 

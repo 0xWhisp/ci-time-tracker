@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Dependency-cache recommendations for Rust (cargo, with Swatinem/rust-cache),
+  Gradle (gradle/actions/setup-gradle), Maven (`cache: maven`) and .NET
+  (`dotnet restore`). On sharkdp/bat, nine install and build steps without a
+  cache, 15 hours over 150 runs.
+
+### Changed
+
+- Dependency-cache recommendations are grouped per workflow and ecosystem,
+  like matrix legs: bat's workflow drew nine near-identical ones.
+
+### Fixed
+
+- Any action with a `cache` input counts as caching (graalvm/setup-graalvm
+  with `cache: maven` on gson drew a recommendation to add a cache).
+
 ### Fixed
 
 - Runs that never executed (awaiting a maintainer's approval, skipped by the
