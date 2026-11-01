@@ -6,6 +6,7 @@ so analysis does not depend on parsing runner log text.
 """
 
 import base64
+import http.client
 import json
 import math
 import os
@@ -16,13 +17,17 @@ import urllib.request
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from ci_time_tracker.models import BuildLog, StepExecution
 
 DEFAULT_API_URL = "https://api.github.com"
 DEFAULT_RUN_LIMIT = 50
+
+# GitHub returns at most this many runs for a filtered listing (any of
+# status, branch or created), so it bounds an analysis over a period
+MAX_LISTED_RUNS = 1000
 
 # Each run needs its own jobs request, and those dominate the wall clock, so
 # they are fetched concurrently. Kept modest to stay clear of GitHub's
@@ -146,7 +151,9 @@ def _urllib_transport(url: str, headers: dict[str, str]) -> tuple[Any, dict[str,
             if delay is None:
                 raise _http_error(error, url) from error
             _sleep(delay)
-        except (urllib.error.URLError, TimeoutError) as error:
+        # A connection reset or a body cut short (IncompleteRead, seen on
+        # pydantic's 300 KB jobs pages) is as transient as an unreachable host
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as error:
             if last_attempt:
                 reason = getattr(error, "reason", error)
                 raise GitHubAPIError(f"Could not reach {url}: {reason}") from error
@@ -180,6 +187,8 @@ def _urllib_send(
         raise _http_error(error, url) from error
     except urllib.error.URLError as error:
         raise GitHubAPIError(f"Could not reach {url}: {error.reason}") from error
+    except (TimeoutError, ConnectionError, http.client.HTTPException) as error:
+        raise GitHubAPIError(f"Could not reach {url}: {error!r}") from error
     except json.JSONDecodeError as error:
         raise GitHubAPIError(f"GitHub returned a non-JSON response for {url}") from error
 
@@ -335,6 +344,8 @@ class GitHubClient:
         limit: int = DEFAULT_RUN_LIMIT,
         status: str | None = "completed",
         include: Callable[[dict[str, Any]], bool] | None = None,
+        since: datetime | None = None,
+        listing: dict[str, Any] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Yield up to `limit` workflow runs, newest first.
 
@@ -347,6 +358,9 @@ class GitHubClient:
                 timings are not final yet
             include: Optional filter; runs it rejects are not yielded and do
                 not count towards `limit`, so later pages are read instead
+            since: Only runs created at or after this time (timezone-aware)
+            listing: When given, receives "total": how many runs match,
+                which can be more than GitHub lists (MAX_LISTED_RUNS)
         """
         if limit <= 0:
             return
@@ -378,10 +392,15 @@ class GitHubClient:
                     "page": page,
                     "status": status,
                     "branch": branch,
+                    "created": f">={since.astimezone(timezone.utc):%Y-%m-%dT%H:%M:%SZ}" if since else None,
                     "exclude_pull_requests": "true",
                 },
             )
-            return payload.get("workflow_runs", []) if isinstance(payload, dict) else []
+            if not isinstance(payload, dict):
+                return []
+            if listing is not None and page == 1 and isinstance(payload.get("total_count"), int):
+                listing["total"] = payload["total_count"]
+            return payload.get("workflow_runs", [])
 
         seen: set[Any] = set()
         yielded = listed = 0
@@ -619,6 +638,8 @@ def fetch_build_logs(
     workers: int = DEFAULT_WORKERS,
     include_attempts: bool = True,
     skipped: list[str] | None = None,
+    since: datetime | None = None,
+    listing: dict[str, Any] | None = None,
 ) -> list[BuildLog]:
     """Fetch recent workflow runs and return them as BuildLogs.
 
@@ -648,6 +669,10 @@ def fetch_build_logs(
             GitHub kept failing to return their jobs (a server error)
         include_attempts: Also fetch the earlier attempts of re-run runs;
             they do not count towards `limit`
+        since: Only runs created at or after this time; `limit` still caps
+            how many are fetched
+        listing: When given, receives "total": how many runs match the
+            filters, including those GitHub does not list
 
     Returns:
         BuildLogs ordered oldest first, so trends read left to right; the
@@ -666,7 +691,10 @@ def fetch_build_logs(
     # One entry per (run, attempt), newest first: (payload, attempt, superseded)
     attempts: list[tuple[dict[str, Any], int, bool]] = []
 
-    for run in client.iter_workflow_runs(workflow=workflow, branch=branch, limit=limit, include=_ran):
+    runs = client.iter_workflow_runs(
+        workflow=workflow, branch=branch, limit=limit, include=_ran, since=since, listing=listing,
+    )
+    for run in runs:
         if run.get("id") is None:
             continue
 

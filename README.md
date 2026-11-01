@@ -103,9 +103,18 @@ ci-time-tracker --github acme/web
 # Last 200 runs of a single workflow on main
 ci-time-tracker --github acme/web --workflow ci.yml --branch main --last 200
 
+# Every run of the last 30 days (also 12h, 2w, or a date: 2026-10-01)
+ci-time-tracker --github acme/web --since 30d
+
 # JSON for a dashboard
 ci-time-tracker --github acme/web --format json
 ```
+
+On a busy repository a few hundred runs can be a single day, too little to see
+a trend; `--since` analyzes a period instead. GitHub lists at most 1000 runs
+for it, the newest first: when the period holds more, the report says from
+when it covers and `--workflow` or a shorter period narrows it. `--last` still
+caps a period.
 
 Set `GITHUB_TOKEN` (or `GH_TOKEN`) to reach private repositories and to raise the
 rate limit from 60 to 5000 requests per hour:

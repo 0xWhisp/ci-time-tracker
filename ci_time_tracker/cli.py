@@ -9,6 +9,7 @@ import json
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from ci_time_tracker.gates import GATE_CHOICES, evaluate_gates, evaluate_impact_
 from ci_time_tracker.github_api import (
     DEFAULT_RUN_LIMIT,
     DEFAULT_WORKERS,
+    MAX_LISTED_RUNS,
     GitHubAPIError,
     GitHubClient,
     fetch_build_logs,
@@ -70,6 +72,26 @@ def _positive_seconds(value: str) -> float:
     if number <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
     return number
+
+
+_PERIOD_UNITS = {"h": 3600, "d": 86400, "w": 7 * 86400}
+
+
+def _since(value: str) -> datetime:
+    """argparse type: a period back from now (12h, 30d, 2w) or a date."""
+    text = value.strip().lower()
+    if text[:-1].isdigit() and text[-1:] in _PERIOD_UNITS:
+        amount = int(text[:-1])
+        if amount <= 0:
+            raise argparse.ArgumentTypeError("must be greater than 0")
+        return datetime.now(timezone.utc) - timedelta(seconds=amount * _PERIOD_UNITS[text[-1]])
+    try:
+        moment = datetime.fromisoformat(value.strip())
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"'{value}' is neither a period (12h, 30d, 2w) nor a date (2026-10-01)"
+        ) from None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
@@ -127,9 +149,20 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--last",
         type=int,
-        default=DEFAULT_RUN_LIMIT,
         metavar="N",
-        help=f"Number of recent runs to analyze (default: {DEFAULT_RUN_LIMIT}). Only used with --github.",
+        help=(
+            f"Number of recent runs to analyze (default: {DEFAULT_RUN_LIMIT}, or up to "
+            f"{MAX_LISTED_RUNS} with --since). Only used with --github."
+        ),
+    )
+    parser.add_argument(
+        "--since",
+        type=_since,
+        metavar="PERIOD",
+        help=(
+            "Only analyze runs created in this period: 12h, 30d, 2w, or a date such as "
+            "2026-10-01. Only used with --github."
+        ),
     )
 
     parser.add_argument(
@@ -484,6 +517,8 @@ def _no_runs_message(args: argparse.Namespace) -> str:
     wrong branch is otherwise indistinguishable from a repository without CI.
     """
     message = "No workflow runs found to analyze"
+    if getattr(args, "since", None):
+        message += f" since {args.since:%Y-%m-%d %H:%M} UTC"
     if not args.branch:
         return message
 
@@ -496,6 +531,22 @@ def _no_runs_message(args: argparse.Namespace) -> str:
     if default and default != args.branch:
         message += f". The repository's default branch is '{default}'"
     return message
+
+
+def _warn_if_period_cut(args: argparse.Namespace, logs: list[Any], limit: int, total: int | None) -> None:
+    """Say when a --since period was not analyzed whole, and from when it was."""
+    runs = sum(1 for log in logs if not log.metadata.get("superseded_attempt"))
+    oldest = min((log.timestamp for log in logs if log.timestamp), default=None)
+    covers = f"; the analysis covers {oldest:%Y-%m-%d %H:%M} UTC onwards" if oldest else ""
+
+    if args.last and runs >= limit:
+        print(f"Warning: stopped at {runs} runs, as --last asks{covers}.", file=sys.stderr)
+    elif total is not None and total > MAX_LISTED_RUNS:
+        print(
+            f"Warning: the period holds {total} runs, but GitHub lists only the newest "
+            f"{MAX_LISTED_RUNS}{covers}. Narrow it with --workflow or a shorter --since.",
+            file=sys.stderr,
+        )
 
 
 def _run_impact(args: argparse.Namespace, pricing: Any) -> int:
@@ -721,15 +772,21 @@ def main() -> int:
                 lookup = lookups.submit(_default_branch, args.github)
                 lookups.shutdown(wait=False)
 
+            # A period is analyzed whole, up to what GitHub lists
+            limit = args.last or (MAX_LISTED_RUNS if args.since else DEFAULT_RUN_LIMIT)
+
             skipped: list[str] = []
+            listing: dict[str, Any] = {}
             try:
                 logs = fetch_build_logs(
                     repo=args.github,
                     workflow=args.workflow,
                     branch=args.branch,
-                    limit=args.last,
+                    limit=limit,
                     cache=cache,
                     skipped=skipped,
+                    since=args.since,
+                    listing=listing,
                 )
                 workflows = _fetch_workflows(args.github, logs, cache) if logs else {}
             except GitHubAPIError as e:
@@ -742,6 +799,9 @@ def main() -> int:
             if not logs:
                 print(f"Error: {_no_runs_message(args)}", file=sys.stderr)
                 return 1
+
+            if args.since:
+                _warn_if_period_cut(args, logs, limit, listing.get("total"))
 
             # Analyze
             pricing, visibility = _visibility_pricing(logs, pricing)
