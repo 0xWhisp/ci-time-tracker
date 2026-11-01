@@ -8,6 +8,7 @@ pull requests) is escaped.
 
 import html
 import math
+from collections import Counter
 from statistics import median
 from typing import Any
 
@@ -139,8 +140,13 @@ def _summary_cards(report: Report) -> str:
             note = "at GitHub list prices"
         cards.append(_card("Estimated cost", format_cost(summary["estimated_cost_usd"]), note))
 
-    issues = len(report.issues)
-    cards.append(_card("Issues", str(issues), "regressions and flaky steps"))
+    kinds = Counter(issue.get("type") for issue in report.issues)
+    parts = [
+        f"{count} {label if count == 1 else label + 's'}"
+        for label, count in (("regression", kinds["regression"]), ("flaky step", kinds["flaky"]))
+        if count
+    ]
+    cards.append(_card("Issues", str(len(report.issues)), " · ".join(parts) or "no regressions or flaky steps"))
 
     return f'<div class="cards">{"".join(cards)}</div>'
 

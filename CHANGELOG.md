@@ -6,8 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-01
+
 ### Fixed
 
+- The HTML report's issues card says how many regressions and how many flaky
+  steps there are, instead of always "regressions and flaky steps".
 - Runs that never executed (awaiting a maintainer's approval, skipped by the
   workflow's conditions, or stale) are left out of the analysis and no longer
   count towards `--last`. They showed up as 0-second builds: on pydantic, 120
@@ -123,5 +127,6 @@ replaces it.
 - An empty result for `--branch` now names the repository's default branch
   when it differs (`main` versus `master`).
 
+[0.3.1]: https://github.com/0xWhisp/ci-time-tracker/releases/tag/v0.3.1
 [0.3.0]: https://github.com/0xWhisp/ci-time-tracker/releases/tag/v0.3.0
 [0.2.0]: https://github.com/0xWhisp/ci-time-tracker/releases/tag/v0.2.0
