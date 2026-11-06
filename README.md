@@ -367,7 +367,7 @@ jobs:
     if: github.event.workflow_run.event == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: 0xWhisp/ci-time-tracker@v0.3.0
+      - uses: 0xWhisp/ci-time-tracker@v0.3.1
 ```
 
 `workflow_run` runs the copy of the workflow on the default branch with the
@@ -620,7 +620,7 @@ Then, for each release:
 1. Bump `version` in `pyproject.toml` and `__version__` in
    `ci_time_tracker/__init__.py` (a test checks they agree), and add the
    release to [CHANGELOG.md](CHANGELOG.md).
-2. Tag and push: `git tag v0.3.0 && git push origin v0.3.0`.
+2. Tag and push: `git tag v0.3.1 && git push origin v0.3.1`.
 3. Create the GitHub release from the tag, with the changelog entry as its
    notes, and tick "Publish this Action to the GitHub Marketplace".
 

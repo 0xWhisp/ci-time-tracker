@@ -82,6 +82,20 @@ class TestSummaryCards:
         assert "public repository: standard runners are free" in html
 
 
+    def test_issues_card_counts_each_kind(self):
+        # A regression on main, and a step that failed then passed on one commit
+        logs = [build(i, 100.0 if i < 6 else 200.0) for i in range(12)]
+        flaky = build(12, 200.0, steps=[StepExecution(name="build / Run tests", duration_seconds=200.0, status="failure")])
+        flaky.head_sha = logs[-1].head_sha
+
+        html = page(logs + [flaky])
+
+        assert "1 regression · 1 flaky step" in html
+
+    def test_issues_card_without_issues(self):
+        assert "no regressions or flaky steps" in page([build(i, 600.0) for i in range(6)])
+
+
 class TestBuildDurationCharts:
     def test_one_chart_per_workflow(self):
         """A 10-second workflow next to a 10-minute one would only zigzag."""
