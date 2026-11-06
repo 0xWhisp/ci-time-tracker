@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from ci_time_tracker import __version__
 from ci_time_tracker.analyzer import analyze_config, analyze_logs
 from ci_time_tracker.cache import RunCache
 from ci_time_tracker.config_parser import parse_config
@@ -108,6 +109,7 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
         description="Analyze CI/CD pipeline configurations and build logs for performance bottlenecks and flaky steps.",
         epilog="Example: ci-time-tracker --config .github/workflows/ci.yml --format text",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     
     # Mode selection (mutually exclusive)
     mode_group = parser.add_mutually_exclusive_group(required=True)
