@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Regressions that started at the same commit are reported as one issue
+  listing each step's change, in text, Markdown and HTML, since one change
+  usually slows several steps at once. JSON keeps one issue per step.
+
 ## [0.3.1] - 2026-11-01
 
 ### Added
