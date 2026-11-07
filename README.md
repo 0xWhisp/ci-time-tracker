@@ -556,7 +556,9 @@ A step has **regressed** when its duration jumped and stayed up:
 4. The most recent 5 builds must still be that slow, so a spike that already
    recovered is not reported.
 
-The report names the commit and build where the regression started. A step
+The report names the commit and build where the regression started; steps
+that slowed down at the same commit are listed together, as one issue (JSON
+keeps one issue per step). A step
 needs at least **10 builds** to be judged; `regression_checked_steps` says how
 many had enough history. With `--group-matrix`, the legs of a build are
 combined into one sample (their median).
