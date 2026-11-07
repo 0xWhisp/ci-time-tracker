@@ -436,6 +436,22 @@ class TestRetries:
 
         assert sleeps == [7.0]
 
+    def test_secondary_rate_limit_without_a_delay_waits_a_minute(self, monkeypatch):
+        """Seen on pydantic: a 429 with no Retry-After ended a 300-run analysis."""
+        _, sleeps = self._urlopen(monkeypatch, [http_error(429), '{"ok": true}'])
+
+        github_api._urllib_transport("https://api.github.com/x", {})
+
+        assert sleeps == [60.0]
+
+    def test_persistent_secondary_rate_limit_says_what_to_do(self, monkeypatch):
+        calls, _ = self._urlopen(monkeypatch, [http_error(429)] * 3)
+
+        with pytest.raises(GitHubAPIError, match="Wait a few minutes and run it again") as error:
+            github_api._urllib_transport("https://api.github.com/x", {})
+        assert error.value.status == 429
+        assert len(calls) == 3
+
     def test_exhausted_rate_limit_is_not_retried(self, monkeypatch):
         """Waiting out the hourly limit would hang the run."""
         calls, _ = self._urlopen(monkeypatch, [http_error(403, {"X-RateLimit-Remaining": "0"})])

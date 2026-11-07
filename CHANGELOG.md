@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A secondary rate limit (HTTP 429) that does not say how long to wait is
+  retried after a minute, as GitHub asks, instead of ending the analysis; if
+  it persists, the error says to wait and run again.
+
 ## [0.3.1] - 2026-11-01
 
 ### Added

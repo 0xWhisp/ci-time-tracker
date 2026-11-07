@@ -105,6 +105,9 @@ _ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 1.0
 _MAX_RETRY_AFTER_SECONDS = 60.0
 _TRANSIENT_STATUSES = frozenset({500, 502, 503, 504})
+# A secondary rate limit that does not say how long to wait: GitHub asks
+# clients to wait at least a minute
+_SECONDARY_LIMIT_WAIT_SECONDS = 60.0
 
 # Injectable so tests do not wait
 _sleep = time.sleep
@@ -121,6 +124,9 @@ def _retry_delay(error: urllib.error.HTTPError, attempt: int) -> float | None:
         except ValueError:
             return None
         return delay if delay <= _MAX_RETRY_AFTER_SECONDS else None
+
+    if error.code == 429:
+        return _SECONDARY_LIMIT_WAIT_SECONDS
 
     if error.code in _TRANSIENT_STATUSES:
         return _RETRY_BACKOFF_SECONDS * 2 ** attempt
@@ -192,6 +198,12 @@ def _http_error(error: urllib.error.HTTPError, url: str) -> GitHubAPIError:
         return GitHubAPIError(
             "GitHub API rate limit exceeded. Set GITHUB_TOKEN to raise the limit "
             "from 60 to 5000 requests per hour.",
+            status=error.code,
+        )
+    if error.code == 429:
+        return GitHubAPIError(
+            "GitHub's secondary rate limit stopped the analysis: too many requests in a short "
+            "time. Wait a few minutes and run it again; runs fetched so far are cached.",
             status=error.code,
         )
     if error.code in (401, 403):
