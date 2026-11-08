@@ -107,5 +107,5 @@ jobs:
             echo "Release $TAG already exists"
             exit 0
           fi
-          python .github/scripts/release_notes.py "$TAG" > notes.md
+          python3 .github/scripts/release_notes.py "$TAG" > notes.md
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md $(ls dist/* 2>/dev/null)
