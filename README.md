@@ -620,9 +620,14 @@ Then, for each release:
 1. Bump `version` in `pyproject.toml` and `__version__` in
    `ci_time_tracker/__init__.py` (a test checks they agree), and add the
    release to [CHANGELOG.md](CHANGELOG.md).
-2. Tag and push: `git tag v0.3.1 && git push origin v0.3.1`.
-3. Create the GitHub release from the tag, with the changelog entry as its
-   notes, and tick "Publish this Action to the GitHub Marketplace".
+2. Tag and push: `git tag v0.3.1 && git push origin v0.3.1`. The workflow
+   publishes to PyPI, then creates the GitHub release with the changelog
+   entry as its notes and the built packages attached.
+3. To list the release on the GitHub Marketplace, edit it and tick "Publish
+   this Action to the GitHub Marketplace".
+
+For a tag that has no GitHub release yet, run the workflow by hand (Actions →
+Release → Run workflow) with the tag; it only creates the release.
 
 The workflow refuses to publish when the tag and the versions disagree.
 

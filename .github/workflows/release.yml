@@ -1,12 +1,21 @@
 name: Release
 
-# Publishes to PyPI when a version tag (e.g. v0.2.0) is pushed. Uses PyPI
+# Publishes to PyPI when a version tag (e.g. v0.2.0) is pushed, then creates
+# the GitHub release with the tag's CHANGELOG entry as its notes. Uses PyPI
 # trusted publishing, so no API token is stored in the repository; the
 # publisher must be configured once on PyPI (see README, "Releasing").
+#
+# Run it by hand with a tag to create a missing GitHub release; that only
+# runs the last job and never publishes to PyPI.
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to create the GitHub release for (e.g. v0.3.1)
+        required: true
 
 permissions:
   contents: read
@@ -14,6 +23,7 @@ permissions:
 jobs:
   build:
     name: Build and check
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -68,3 +78,34 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Create the GitHub release
+    needs: publish
+    # On a manual run, build and publish are skipped; create the release anyway
+    if: ${{ !cancelled() && (needs.publish.result == 'success' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # The tag itself on a push; on a manual run, the branch it runs from,
+      # whose CHANGELOG holds the earlier versions too
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'push'
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create the release
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists"
+            exit 0
+          fi
+          python3 .github/scripts/release_notes.py "$TAG" > notes.md
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md $(ls dist/* 2>/dev/null)

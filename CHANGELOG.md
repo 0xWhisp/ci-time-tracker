@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Releases: the release workflow also creates the GitHub release, with the
+  version's changelog entry as its notes, and can be run by hand to create one
+  for an existing tag.
+
 ## [0.3.1] - 2026-11-01
 
 ### Added
