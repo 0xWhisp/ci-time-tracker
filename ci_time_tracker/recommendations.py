@@ -56,6 +56,13 @@ _INSTALL_COMMANDS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bbundle\s+install\b"), "bundler"),
     (re.compile(r"\bcomposer\s+install\b"), "composer"),
     (re.compile(r"\bgo\s+mod\s+download\b"), "go"),
+    # Compiled ecosystems download dependencies as part of the build itself
+    (re.compile(r"\bcargo\s+(build|test|check|clippy|nextest|fetch|doc|install)\b"), "cargo"),
+    (re.compile(r"\bgradlew?(\.bat)?\s+\w"), "gradle"),
+    (re.compile(r"\bmvnw?(\.cmd)?\s+[-\w]"), "maven"),
+    # Only an explicit restore: NuGet's cache saves the download, not the
+    # compilation an implicit restore in `dotnet build` is timed with
+    (re.compile(r"\bdotnet\s+restore\b"), "dotnet"),
 ]
 
 _CACHE_SUGGESTIONS = {
@@ -69,6 +76,10 @@ _CACHE_SUGGESTIONS = {
     "bundler": "Set `bundler-cache: true` on ruby/setup-ruby.",
     "composer": "Cache Composer's cache directory with actions/cache.",
     "go": "Use actions/setup-go, which caches modules by default.",
+    "cargo": "Use Swatinem/rust-cache, which caches dependencies and build output.",
+    "gradle": "Use gradle/actions/setup-gradle, which caches dependencies and build output.",
+    "maven": "Set `cache: maven` on actions/setup-java.",
+    "dotnet": "Set `cache: true` on actions/setup-dotnet (it needs a packages.lock.json).",
 }
 
 _CONCURRENCY_SNIPPET = (
@@ -154,14 +165,15 @@ def _job_caches(steps: list[Any]) -> bool:
 
         if "cache" in action:
             return True
-        if action in {"actions/setup-python", "actions/setup-node", "actions/setup-java", "actions/setup-dotnet"}:
-            if inputs.get("cache"):
-                return True
+        # setup-python, setup-node, setup-java, setup-dotnet, setup-graalvm...
+        cache_input = inputs.get("cache")
+        if cache_input and str(cache_input).lower() != "false":
+            return True
         if action == "actions/setup-go" and str(inputs.get("cache", True)).lower() != "false":
             return True
         if action == "ruby/setup-ruby" and str(inputs.get("bundler-cache", "")).lower() == "true":
             return True
-        if action == "astral-sh/setup-uv":
+        if action in {"astral-sh/setup-uv", "gradle/actions/setup-gradle", "gradle/gradle-build-action"}:
             return True
     return False
 
@@ -205,7 +217,9 @@ def recommend_dependency_caches(
 ) -> list[Recommendation]:
     """Jobs that install dependencies without any cache, where it is slow."""
     executions = _step_executions(logs)
-    recommendations: list[Recommendation] = []
+
+    # (workflow, ecosystem) -> [(job, step, durations, cost)]
+    findings: dict[tuple[str, str], list[tuple[str, str, list[float], float | None]]] = defaultdict(list)
 
     for path, workflow in workflows.items():
         for job_id, job in _jobs(workflow).items():
@@ -230,21 +244,52 @@ def recommend_dependency_caches(
 
                 costs = [attributed_cost(duration, pricing.price_for(runner)) for duration, runner in runs]
                 known = [cost for cost in costs if cost is not None]
+                findings[(path, ecosystem)].append((job_name, step_name, durations, sum(known) if known else None))
 
-                recommendations.append(Recommendation(
-                    kind="dependency-cache",
-                    title=f"Cache {ecosystem} dependencies in `{job_name}`",
-                    workflow=path,
-                    job=job_name,
-                    evidence=(
-                        f"`{step_name}` takes a median of {format_duration(median(durations))} per run "
-                        f"({format_duration(sum(durations))} over {len(durations)} runs), and the job "
-                        "restores no cache."
-                    ),
-                    suggestion=_CACHE_SUGGESTIONS[ecosystem],
-                    time_at_stake_seconds=sum(durations),
-                    cost_at_stake_usd=sum(known) if known else None,
-                ))
+    # One recommendation per workflow and ecosystem: bat's workflow drew nine,
+    # several per job, when the fix is the same everywhere
+    recommendations: list[Recommendation] = []
+
+    for (path, ecosystem), steps_found in findings.items():
+        steps_found.sort(key=lambda found: sum(found[2]), reverse=True)
+        seconds = sum(sum(found[2]) for found in steps_found)
+        known_costs = [found[3] for found in steps_found if found[3] is not None]
+        job_seconds: dict[str, float] = defaultdict(float)
+        for job_name, _, durations, _ in steps_found:
+            job_seconds[job_name] += sum(durations)
+        jobs = sorted(job_seconds, key=job_seconds.__getitem__, reverse=True)
+
+        if len(steps_found) == 1:
+            job_name, step_name, durations, _ = steps_found[0]
+            evidence = (
+                f"`{step_name}` takes a median of {format_duration(median(durations))} per run "
+                f"({format_duration(sum(durations))} over {len(durations)} runs), and the job "
+                "restores no cache."
+            )
+        else:
+            names = ", ".join(f"`{name}`" for name in jobs[:3])
+            more = f" and {len(jobs) - 3} more" if len(jobs) > 3 else ""
+            runs = max(len(found[2]) for found in steps_found)
+            evidence = (
+                f"{len(steps_found)} steps in {names}{more} install {ecosystem} dependencies, taking "
+                f"{format_duration(seconds)} over {runs} runs, and those jobs restore no cache. "
+                f"The slowest is `{steps_found[0][1]}`, a median of "
+                f"{format_duration(median(steps_found[0][2]))} per run."
+            )
+
+        recommendations.append(Recommendation(
+            kind="dependency-cache",
+            title=(
+                f"Cache {ecosystem} dependencies in `{jobs[0]}`" if len(jobs) == 1
+                else f"Cache {ecosystem} dependencies in {len(jobs)} jobs"
+            ),
+            workflow=path,
+            job=jobs[0] if len(jobs) == 1 else None,
+            evidence=evidence,
+            suggestion=_CACHE_SUGGESTIONS[ecosystem],
+            time_at_stake_seconds=seconds,
+            cost_at_stake_usd=sum(known_costs) if known_costs else None,
+        ))
 
     return recommendations
 
