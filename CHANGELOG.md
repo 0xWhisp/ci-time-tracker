@@ -17,6 +17,9 @@ All notable changes to this project are documented here. The format follows
 
 - Dependency-cache recommendations are grouped per workflow and ecosystem,
   like matrix legs: bat's workflow drew nine near-identical ones.
+- Releases: the release workflow also creates the GitHub release, with the
+  version's changelog entry as its notes, and can be run by hand to create one
+  for an existing tag.
 
 ### Fixed
 
