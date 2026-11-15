@@ -114,7 +114,7 @@ class TestGitHubMode:
         assert args.github == "acme/web"
         assert args.workflow is None
         assert args.branch is None
-        assert args.last == 50
+        assert args.last is None  # 50, or a whole --since period
         assert args.no_cache is False
 
     def test_parse_args_github_options(self) -> None:

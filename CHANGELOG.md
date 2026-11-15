@@ -12,6 +12,10 @@ All notable changes to this project are documented here. The format follows
   Gradle (gradle/actions/setup-gradle), Maven (`cache: maven`) and .NET
   (`dotnet restore`). On sharkdp/bat, nine install and build steps without a
   cache, 15 hours over 150 runs.
+- `--since 30d` (or `12h`, `2w`, a date): analyze every run of a period
+  instead of a number of runs. On pydantic, 300 runs are a single day. A
+  period holding more runs than GitHub lists (1000) is flagged, with the date
+  the analysis covers from.
 
 ### Changed
 
@@ -22,6 +26,9 @@ All notable changes to this project are documented here. The format follows
 
 - Any action with a `cache` input counts as caching (graalvm/setup-graalvm
   with `cache: maven` on gson drew a recommendation to add a cache).
+- A response cut short (`IncompleteRead`) or a reset connection is retried
+  like other network errors, instead of ending the run with "Unexpected
+  error". Seen on pydantic's large jobs pages.
 
 ## [0.3.1] - 2026-11-01
 
