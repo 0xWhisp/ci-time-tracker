@@ -21,6 +21,7 @@ from ci_time_tracker.models import BuildLog, StepExecution
 from ci_time_tracker.pricing import PricingTable
 from ci_time_tracker.recommendations import (
     MIN_TIME_AT_STAKE_SECONDS,
+    _install_ecosystem,
     _job_caches,
     parse_workflow,
     recommend,
@@ -98,6 +99,11 @@ class TestJobCaches:
         [{"uses": "ruby/setup-ruby@v1", "with": {"bundler-cache": True}}],
         [{"uses": "astral-sh/setup-uv@v6"}],
         [{"uses": "some-org/fancy-cache-action@v1"}],
+        [{"uses": "Swatinem/rust-cache@v2"}],
+        [{"uses": "gradle/actions/setup-gradle@v4"}],  # caches by default
+        [{"uses": "actions/setup-java@v4", "with": {"distribution": "temurin", "cache": "maven"}}],
+        # Seen on gson: any setup action with a cache input
+        [{"uses": "graalvm/setup-graalvm@v1", "with": {"distribution": "graalvm", "cache": "maven"}}],
     ])
     def test_recognized_caches(self, steps):
         assert _job_caches(steps)
@@ -105,6 +111,7 @@ class TestJobCaches:
     @pytest.mark.parametrize("steps", [
         [{"uses": "actions/setup-python@v6", "with": {"python-version": "3.12"}}],
         [{"uses": "actions/setup-go@v5", "with": {"cache": False}}],
+        [{"uses": "actions/setup-node@v4", "with": {"cache": "false"}}],
         [{"run": "pip install ."}],
     ])
     def test_no_cache(self, steps):
@@ -158,6 +165,94 @@ jobs:
         [item] = recommend_dependency_caches(logs, {PATH: workflow}, PricingTable())
 
         assert item.suggestion == "Set `cache: npm` on actions/setup-node."
+
+    @pytest.mark.parametrize(("run", "ecosystem"), [
+        ("cargo test --all-features", "cargo"),
+        ("cargo nextest run", "cargo"),
+        ("./gradlew build --scan", "gradle"),
+        ("gradlew.bat check", "gradle"),
+        ("./mvnw -B verify", "maven"),
+        ("mvn package", "maven"),
+        ("dotnet restore", "dotnet"),
+    ])
+    def test_compiled_ecosystems(self, run, ecosystem):
+        assert _install_ecosystem(run) == ecosystem
+
+    @pytest.mark.parametrize("run", [
+        "cargo fmt --check",
+        "echo gradle",
+        "dotnet --info",
+        # Seen on Humanizer: an 8-minute CodeQL build, mostly compiling
+        "dotnet build -c Release",
+        "rustup toolchain install stable",
+    ])
+    def test_commands_that_install_nothing(self, run):
+        assert _install_ecosystem(run) is None
+
+    def test_one_recommendation_per_workflow_and_ecosystem(self):
+        """Seen on bat: nine near-identical recommendations, several per job."""
+        workflow = parse_workflow("""
+jobs:
+  audit:
+    steps:
+      - run: cargo install cargo-audit
+  tests:
+    steps:
+      - name: Build
+        run: cargo build
+      - name: Unit tests
+        run: cargo test
+  docs:
+    steps:
+      - name: Docs
+        run: cargo doc
+""")
+
+        def step(job, name, duration):
+            return StepExecution(name=f"{job} / {name}", duration_seconds=duration, job_name=job, runner="ubuntu-latest")
+
+        logs = [
+            build(i, [
+                step("audit", "Run cargo install cargo-audit", 170.0),
+                step("tests", "Build", 100.0),
+                step("tests", "Unit tests", 160.0),
+                step("docs", "Docs", 30.0),
+            ])
+            for i in range(10)
+        ]
+
+        [item] = recommend_dependency_caches(logs, {PATH: workflow}, PricingTable())
+
+        assert item.title == "Cache cargo dependencies in 3 jobs"
+        assert item.job is None
+        assert item.evidence.startswith("4 steps in `tests`, `audit`, `docs` install cargo dependencies")
+        assert "The slowest is `Run cargo install cargo-audit`, a median of 2m 50s per run." in item.evidence
+        assert item.time_at_stake_seconds == 10 * (170.0 + 100.0 + 160.0 + 30.0)
+        assert item.suggestion.startswith("Use Swatinem/rust-cache")
+
+    def test_several_steps_of_one_job_name_the_job(self):
+        workflow = parse_workflow("""
+jobs:
+  build:
+    steps:
+      - name: Fetch
+        run: ./mvnw dependency:go-offline
+      - name: Verify
+        run: ./mvnw -B verify
+""")
+        logs = [
+            build(i, [
+                StepExecution(name=f"build / {name}", duration_seconds=60.0, job_name="build", runner="ubuntu-latest")
+                for name in ("Fetch", "Verify")
+            ])
+            for i in range(10)
+        ]
+
+        [item] = recommend_dependency_caches(logs, {PATH: workflow}, PricingTable())
+
+        assert item.title == "Cache maven dependencies in `build`"
+        assert item.job == "build"
+        assert item.evidence.startswith("2 steps in `build` install maven dependencies")
 
     def test_missing_workflow_means_no_recommendation(self):
         logs = [build(i, [install_step(60.0)]) for i in range(12)]
