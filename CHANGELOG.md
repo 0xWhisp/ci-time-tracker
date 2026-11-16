@@ -21,6 +21,9 @@ All notable changes to this project are documented here. The format follows
 
 - Dependency-cache recommendations are grouped per workflow and ecosystem,
   like matrix legs: bat's workflow drew nine near-identical ones.
+- Regressions that started at the same commit are reported as one issue
+  listing each step's change, in text, Markdown and HTML, since one change
+  usually slows several steps at once. JSON keeps one issue per step.
 
 ### Fixed
 
