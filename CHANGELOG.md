@@ -12,11 +12,18 @@ All notable changes to this project are documented here. The format follows
   Gradle (gradle/actions/setup-gradle), Maven (`cache: maven`) and .NET
   (`dotnet restore`). On sharkdp/bat, nine install and build steps without a
   cache, 15 hours over 150 runs.
+- `--since 30d` (or `12h`, `2w`, a date): analyze every run of a period
+  instead of a number of runs. On pydantic, 300 runs are a single day. A
+  period holding more runs than GitHub lists (1000) is flagged, with the date
+  the analysis covers from.
 
 ### Changed
 
 - Dependency-cache recommendations are grouped per workflow and ecosystem,
   like matrix legs: bat's workflow drew nine near-identical ones.
+- Regressions that started at the same commit are reported as one issue
+  listing each step's change, in text, Markdown and HTML, since one change
+  usually slows several steps at once. JSON keeps one issue per step.
 - Releases: the release workflow also creates the GitHub release, with the
   version's changelog entry as its notes, and can be run by hand to create one
   for an existing tag.
@@ -25,6 +32,9 @@ All notable changes to this project are documented here. The format follows
 
 - Any action with a `cache` input counts as caching (graalvm/setup-graalvm
   with `cache: maven` on gson drew a recommendation to add a cache).
+- A response cut short (`IncompleteRead`) or a reset connection is retried
+  like other network errors, instead of ending the run with "Unexpected
+  error". Seen on pydantic's large jobs pages.
 
 ## [0.3.1] - 2026-11-01
 
