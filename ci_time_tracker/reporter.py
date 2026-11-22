@@ -293,19 +293,71 @@ def _describe_origin(started: dict[str, Any]) -> str:
     return context_str
 
 
+def _regression_change(issue: dict[str, Any]) -> str:
+    """How a step's median moved, e.g. "1m 0s -> 1m 30s (+50%, +30s)"."""
+    if "baseline_median" not in issue or "current_median" not in issue:
+        return ""
+    pct = issue.get("increase_pct")
+    pct_str = f"+{pct * 100:.0f}%, " if pct is not None else ""
+    return (
+        f"{format_duration(issue['baseline_median'])} -> {format_duration(issue['current_median'])} "
+        f"({pct_str}+{format_duration(issue.get('increase_seconds'))})"
+    )
+
+
+def group_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge regressions that started at the same commit into one issue.
+
+    One change usually slows several steps at once; listing each as its own
+    regression hides that they share a cause. A merged issue has "steps": the
+    step issues it holds, largest increase first, and "step": how many. Other
+    issues are returned unchanged, in their order.
+    """
+    groups: dict[Any, list[dict[str, Any]]] = {}
+    for issue in issues:
+        if issue["type"] == "regression":
+            started = issue.get("started_at") or {}
+            key = started.get("head_sha") or started.get("build_id")
+            if key:
+                groups.setdefault(key, []).append(issue)
+
+    grouped: list[dict[str, Any]] = []
+    done: set[Any] = set()
+    for issue in issues:
+        started = issue.get("started_at") or {}
+        key = started.get("head_sha") or started.get("build_id") if issue["type"] == "regression" else None
+        members = groups.get(key, []) if key else []
+        if len(members) < 2:
+            grouped.append(issue)
+        elif key not in done:
+            done.add(key)
+            members = sorted(members, key=lambda item: item.get("increase_seconds") or 0.0, reverse=True)
+            grouped.append({
+                "type": "regression",
+                "step": f"{len(members)} steps",
+                "severity": issue.get("severity", "warning"),
+                "started_at": members[0].get("started_at"),
+                "steps": members,
+            })
+    return grouped
+
+
 def _format_issue_details(issue: dict[str, Any]) -> list[str]:
     """Indented detail lines explaining why an issue was raised."""
     details: list[str] = []
 
-    if issue["type"] == "regression":
-        if "baseline_median" in issue and "current_median" in issue:
-            pct = issue.get("increase_pct")
-            pct_str = f"+{pct * 100:.0f}%, " if pct is not None else ""
-            details.append(
-                f"    Median {format_duration(issue['baseline_median'])} -> "
-                f"{format_duration(issue['current_median'])} "
-                f"({pct_str}+{format_duration(issue.get('increase_seconds'))})"
-            )
+    if issue["type"] == "regression" and issue.get("steps"):
+        origin = _describe_origin(issue.get("started_at") or {})
+        if origin:
+            details.append(f"    Started together at {origin}")
+        for step in issue["steps"]:
+            change = _regression_change(step)
+            details.append(f"    {step['step']}" + (f": {change}" if change else ""))
+
+    elif issue["type"] == "regression":
+        change = _regression_change(issue)
+        if change:
+            details.append(f"    Median {change}")
 
         origin = _describe_origin(issue.get("started_at") or {})
         if origin:
@@ -395,7 +447,7 @@ def format_text(report: Report, top: int | None = None) -> str:
     if report.issues:
         lines.append("ISSUES")
         lines.append("-" * width)
-        for issue in report.issues:
+        for issue in group_issues(report.issues):
             issue_type = issue["type"].upper()
             step = issue["step"]
             severity = issue.get("severity", "warning").upper()
@@ -519,9 +571,10 @@ def format_markdown(report: Report, top: int | None = None) -> str:
     if report.mode == "log":
         if report.issues:
             lines += ["### Issues", ""]
-            for issue in report.issues:
+            for issue in group_issues(report.issues):
                 label = _ISSUE_LABELS.get(issue["type"], issue["type"].title())
-                lines.append(f"- {label}: `{issue['step']}`")
+                step = issue["step"] if issue.get("steps") else f"`{issue['step']}`"
+                lines.append(f"- {label}: {step}")
                 for detail in _format_issue_details(issue):
                     lines.append(f"  - {detail.strip()}")
             lines.append("")

@@ -22,6 +22,7 @@ from ci_time_tracker.reporter import (
     cost_coverage,
     format_cost,
     format_duration,
+    group_issues,
 )
 
 # Builds in the rolling median drawn over the build durations
@@ -338,7 +339,7 @@ def _issues_html(report: Report) -> str:
     urls = {entry.get("build_id"): entry.get("url") for entry in report.timeline}
     items = []
 
-    for issue in report.issues:
+    for issue in group_issues(report.issues):
         kind = issue["type"]
         details = "".join(f"<p>{_e(line.strip())}</p>" for line in _format_issue_details(issue))
         started = (issue.get("started_at") or {}).get("build_id")
@@ -347,8 +348,9 @@ def _issues_html(report: Report) -> str:
             if started and urls.get(started) else ""
         )
         label = {"regression": "Regression", "flaky": "Flaky"}.get(kind, kind.title())
+        step = _e(issue["step"]) if issue.get("steps") else f"<code>{_e(issue['step'])}</code>"
         items.append(
-            f'<div class="item {_e(kind)}"><h3>{_e(label)}: <code>{_e(issue["step"])}</code></h3>'
+            f'<div class="item {_e(kind)}"><h3>{_e(label)}: {step}</h3>'
             f"{details}{link}</div>"
         )
 
