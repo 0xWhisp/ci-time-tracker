@@ -24,6 +24,9 @@ All notable changes to this project are documented here. The format follows
 - Regressions that started at the same commit are reported as one issue
   listing each step's change, in text, Markdown and HTML, since one change
   usually slows several steps at once. JSON keeps one issue per step.
+- Releases: the release workflow also creates the GitHub release, with the
+  version's changelog entry as its notes, and can be run by hand to create one
+  for an existing tag.
 
 ### Fixed
 
